@@ -60,7 +60,7 @@ cp .env.example .env.local
    npx @aiinbx/cli listen --forward-to localhost:3000/webhook  # second terminal, in this folder
    ```
 
-   The AI Inbx CLI picks up `AI_INBX_API_KEY` from `.env.local` when you run it in this folder. Mail `AGENT_INBOX` from any other address, and the dev server prints `[onEmail] default/agent@… ← you@…: subject`. Add `ANTHROPIC_API_KEY` to `.env.local` and restart: the dev server then runs [`examples/ai-sdk-agent.ts`](examples/ai-sdk-agent.ts), which reads the thread, searches the inbox when it needs to, and writes a draft reply for you to approve. Your own agent goes in `onEmail` in `scripts/dev.ts`. The MCP endpoint at `localhost:3000/mcp` gives any MCP client the tools for `AGENT_INBOX`.
+   The AI Inbx CLI picks up `AI_INBX_API_KEY` from `.env.local` when you run it in this folder. Mail `AGENT_INBOX` from any other address, and the dev server prints `[onEmail] default/agent@… ← you@…: subject`. Your agent goes in `onEmail` in `scripts/dev.ts`. To try the tools without one, connect an MCP client to the dev server, for example Claude Code: `claude mcp add --transport http email http://localhost:3000/mcp`, then ask it what's in the inbox. The MCP endpoint at `localhost:3000/mcp` gives any MCP client the tools for `AGENT_INBOX`.
 
 ## Use it in your app
 
@@ -180,7 +180,12 @@ const tools = createEmailTools(kit.scope({ tenant, inboxes: "agent@acme.com" }))
 
 // Vercel AI SDK
 import { toAiSdkTools } from "./email-kit/adapters/ai-sdk"
-await generateText({ model, tools: toAiSdkTools(tools), stopWhen: stepCountIs(12), prompt })
+await generateText({
+  model,
+  tools: toAiSdkTools(tools),
+  stopWhen: stepCountIs(10),
+  prompt: email.text,
+})
 
 // TanStack AI
 import { toTanStackAiTools } from "./email-kit/adapters/tanstack-ai"
@@ -210,8 +215,6 @@ export const POST = createMcpHandler(() => createEmailTools(kit.scope({ tenant, 
 // Anything else: plain JSON Schema, and a runner for the model's tool calls
 import { toJsonSchemaTools, runTool } from "./email-kit/adapters/json-schema"
 ```
-
-[`examples/ai-sdk-agent.ts`](examples/ai-sdk-agent.ts) wires a complete agent: every incoming email runs one AI SDK loop with the tools.
 
 ## How `onEmail` runs
 

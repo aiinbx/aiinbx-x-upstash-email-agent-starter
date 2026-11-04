@@ -2,30 +2,24 @@
  * Local server for trying the kit: the webhook, the workflow and an MCP
  * endpoint for one inbox. Run with `npm run dev`, then forward AI Inbx events
  * to it with `npx @aiinbx/cli listen --forward-to localhost:3000/webhook`.
- * Your agent goes in `onEmail` below; `examples/ai-sdk-agent.ts` shows one.
+ * Your agent goes in `onEmail` below. Or connect an MCP client to
+ * localhost:3000/mcp and use the tools yourself.
  */
 import { createEmailKit, createEmailTools } from "../src"
 import { createMcpHandler } from "../src/adapters/mcp"
-import { draftingAgent } from "../examples/ai-sdk-agent"
 import { serve } from "./serve"
 
 const port = Number(process.env.PORT ?? 3000)
 const inbox = process.env.AGENT_INBOX ?? "agent@email-agent-starter.aiinbx.app"
-
-const agent = process.env.ANTHROPIC_API_KEY ? draftingAgent : null
 
 const kit = createEmailKit({
   workflow:
     process.env.QSTASH_DEV || process.env.QSTASH_TOKEN
       ? { url: `http://localhost:${port}/workflow` }
       : undefined,
-  // With a model key, the example agent writes drafts; without one, mail is only logged.
-  ...(agent && { drafts: agent.drafts, shouldHandle: agent.shouldHandle }),
-  onEmail: async (args) => {
-    console.log(
-      `[onEmail] ${args.tenant}/${args.inbox} ← ${args.email.from.address}: ${args.email.subject}`,
-    )
-    await agent?.onEmail(args)
+  onEmail: async ({ email, tenant, inbox }) => {
+    console.log(`[onEmail] ${tenant}/${inbox} ← ${email.from.address}: ${email.subject}`)
+    // Hand `tools` (also in the arguments) to your agent here.
   },
 })
 const mcp = createMcpHandler(() => createEmailTools(kit.scope({ inboxes: inbox })))
