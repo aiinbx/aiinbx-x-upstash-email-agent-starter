@@ -102,6 +102,15 @@ export function createScope(
     if (!ours) throw new NotInScopeError(`Inbox ${address}`)
   }
 
+  async function assertDraft(emailId: string): Promise<void> {
+    const [e, status] = await Promise.all([
+      email(emailId),
+      ctx.redis.get<string>(k.status(emailId)),
+    ])
+    const visible = e && (all || e.inboxes.some((i) => inboxes.includes(i)))
+    if (!visible || status !== "draft") throw new NotInScopeError(`Draft ${emailId}`)
+  }
+
   async function summary(threadId: string, at: number): Promise<ThreadSummary> {
     const [meta, ids] = await Promise.all([
       ctx.redis.hgetall<Record<string, string>>(k.thread(threadId)),
@@ -294,6 +303,66 @@ export function createScope(
         ...(note !== undefined && { note }),
         updated_at: new Date().toISOString(),
       })
+    },
+
+    /**
+     * Drafts the scope's agents wrote, newest first: what your app shows a
+     * person to approve when the agent runs with `drafts: true`.
+     */
+    async listDrafts(options: { limit?: number } = {}) {
+      const lists = await Promise.all(
+        views.map((v) =>
+          ctx.redis.zrange<(string | number)[]>(k.drafts(v), 0, (options.limit ?? 20) - 1, {
+            rev: true,
+            withScores: true,
+          }),
+        ),
+      )
+      const ids = scored(lists)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, options.limit ?? 20)
+      const drafts = await Promise.all(ids.map((m) => email(m.id)))
+      return drafts.flatMap((d) =>
+        d
+          ? [
+              {
+                id: d.id,
+                thread_id: d.thread_id,
+                from: d.from,
+                to: d.to,
+                cc: d.cc,
+                subject: d.subject,
+                text: d.text,
+                created_at: d.created_at,
+              },
+            ]
+          : [],
+      )
+    },
+
+    /** Change a draft before it goes: recipients, subject or text. */
+    async updateDraft(
+      emailId: string,
+      changes: { to?: string[]; cc?: string[]; subject?: string; text?: string; html?: string },
+    ) {
+      await assertDraft(emailId)
+      await ctx.aiinbx.emails.update(emailId, changes)
+      await store(emailId)
+    },
+
+    /** Send a draft a person approved. */
+    async sendDraft(emailId: string) {
+      await assertDraft(emailId)
+      const sent = await ctx.aiinbx.emails.sendDraft(emailId)
+      await store(emailId)
+      return { id: sent.id, thread_id: sent.thread_id, status: sent.status }
+    },
+
+    /** Throw a draft away. */
+    async discardDraft(emailId: string) {
+      await assertDraft(emailId)
+      await ctx.aiinbx.emails.cancel(emailId)
+      await store(emailId)
     },
 
     /** Start a conversation from one of the scope's inboxes. */

@@ -319,6 +319,33 @@ describe("sending", () => {
     expect(fake.calls.send.at(-1)).toMatchObject({ body: { draft: true } })
   })
 
+  it("lets your app approve, edit or discard drafts, each customer only its own", async () => {
+    const write = (inbox: string, text: string) =>
+      createEmailTools(kit.scope({ inboxes: inbox }), { drafts: true })
+        .find((t) => t.name === "send_email")!
+        .execute({ to: ["client@example.com"], subject: "Offer", text } as never) as Promise<any>
+    const a = await write(AGENT, "First offer.")
+    const b = await write(AGENT, "Second offer.")
+    const sales = await write(OTHER, "Sales offer.")
+
+    const review = kit.scope({ inboxes: AGENT })
+    const ids = async () => (await review.listDrafts()).map((d) => d.id)
+    expect(await ids()).toEqual(expect.arrayContaining([b.id, a.id]))
+    expect((await ids()).indexOf(b.id)).toBeLessThan((await ids()).indexOf(a.id))
+    expect(await ids()).not.toContain(sales.id)
+    await expect(kit.scope({ inboxes: OTHER }).sendDraft(a.id)).rejects.toThrow(NotInScopeError)
+
+    await review.updateDraft(a.id, { text: "First offer, 5% off." })
+    expect((await review.sendDraft(a.id)).status).toBe("scheduled")
+    await review.discardDraft(b.id)
+    expect(await ids()).not.toContain(a.id)
+    expect(await ids()).not.toContain(b.id)
+    await expect(review.sendDraft(b.id)).rejects.toThrow(NotInScopeError)
+
+    const thread = await review.getThread(a.thread_id)
+    expect(thread.messages[0]).toMatchObject({ status: "scheduled", text: "First offer, 5% off." })
+  })
+
   it("answers Reply-To and copies everyone else on reply-all", async () => {
     fake.add({
       id: "eml_team",

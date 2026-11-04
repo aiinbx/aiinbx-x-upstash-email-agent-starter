@@ -73,6 +73,8 @@ export function keys(prefix: string, tenant: string) {
     thread: (threadId: string) => `${t}:thread:${threadId}`,
     /** The inbox's threads, scored by latest activity. */
     inbox: (inbox: string) => `${t}:inbox:${inbox}`,
+    /** Drafts waiting for a person, scored by when they were written. */
+    drafts: (inbox: string) => `${t}:inbox:${inbox}:drafts`,
     /** The inbox's messages of one thread, scored by time. */
     inboxThread: (inbox: string, threadId: string) => `${t}:inbox:${inbox}:thread:${threadId}`,
     handled: (emailId: string, inbox: string) => `${t}:handled:${emailId}:${inbox}`,

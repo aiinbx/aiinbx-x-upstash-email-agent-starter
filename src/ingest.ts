@@ -98,7 +98,11 @@ export async function saveEmail(
 ): Promise<StoredEmail> {
   const email = await ctx.aiinbx.emails.retrieve(emailId, { include: ["attachment_content"] })
   const tenant = ctx.tenantOf(email.space_id)
-  const existing = await ctx.redis.get<StoredEmail>(keys(ctx.prefix, tenant).email(emailId))
+  const k = keys(ctx.prefix, tenant)
+  const [existing, status] = await Promise.all([
+    ctx.redis.get<StoredEmail>(k.email(emailId)),
+    ctx.redis.get<string>(k.status(emailId)),
+  ])
   // Storing again never narrows who sees an email: a backfill knows less
   // than the webhook that stored it first.
   const inboxes = [
@@ -115,7 +119,10 @@ export async function saveEmail(
     })
   }
   await indexEmail(ctx, email, stored)
-  await writeRecords(ctx, email, stored, attachments)
+  // Delivery events may already have set a later status; a draft's status
+  // only ever moves on by being sent or discarded, which the API knows.
+  const latest = !status || status === "draft" ? email.status : null
+  await writeRecords(ctx, email, stored, attachments, latest)
   return stored
 }
 
@@ -246,18 +253,21 @@ async function writeRecords(
   email: FullEmail,
   stored: StoredEmail,
   attachments: StoredAttachment[],
+  status: string | null,
 ): Promise<void> {
   const k = keys(ctx.prefix, stored.tenant)
   const at = Date.parse(email.created_at)
   const tx = ctx.redis.multi()
   tx.set(k.email(email.id), stored)
-  tx.set(k.status(email.id), email.status, { nx: true })
+  if (status) tx.set(k.status(email.id), status)
   for (const a of attachments) tx.set(k.attachment(a.id), a)
   tx.hsetnx(k.thread(email.thread_id), "subject", email.subject)
   tx.sadd(addressesKey(ctx.prefix), stored.inboxes[0]!, ...stored.inboxes.slice(1))
   for (const inbox of [...stored.inboxes, ALL_INBOXES]) {
     tx.zadd(k.inbox(inbox), { gt: true }, { score: at, member: email.thread_id })
     tx.zadd(k.inboxThread(inbox, email.thread_id), { score: at, member: email.id })
+    if (email.status === "draft") tx.zadd(k.drafts(inbox), { score: at, member: email.id })
+    else tx.zrem(k.drafts(inbox), email.id)
   }
   await tx.exec()
 }

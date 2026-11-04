@@ -141,6 +141,21 @@ export function fakeAIInbx() {
         if (!email) throw new Error(`no email ${id}`)
         return structuredClone(email)
       },
+      update: async (id: string, changes: Partial<FullEmail>) => {
+        const email = emails.get(id)!
+        Object.assign(email, changes, changes.text ? { stripped_text: changes.text } : {})
+        return email
+      },
+      sendDraft: async (id: string) => {
+        const email = emails.get(id)!
+        email.status = "scheduled"
+        return email
+      },
+      cancel: async (id: string) => {
+        const email = emails.get(id)!
+        email.status = email.status === "draft" ? "discarded" : "canceled"
+        return email
+      },
       list: async function* (query: { after?: string }) {
         const after = query.after ? Date.parse(query.after) : -Infinity
         yield* [...emails.values()]
