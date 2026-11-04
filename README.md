@@ -183,7 +183,7 @@ const tools = createEmailTools(kit.scope({ tenant, inboxes: "agent@acme.com" }))
 
 // Vercel AI SDK
 import { toAiSdkTools } from "./email-kit/adapters/ai-sdk"
-await generateText({ model, tools: toAiSdkTools(tools), stopWhen: isStepCount(12), prompt })
+await generateText({ model, tools: toAiSdkTools(tools), stopWhen: stepCountIs(12), prompt })
 
 // TanStack AI
 import { toTanStackAiTools } from "./email-kit/adapters/tanstack-ai"
