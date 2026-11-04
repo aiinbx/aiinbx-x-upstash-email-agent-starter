@@ -372,6 +372,7 @@ describe("sending", () => {
       threadId: "thr_invoice",
       body: {
         from: { name: "Agent", address: AGENT },
+        email_id: "eml_invoice",
         reply_all: false,
         text: "We pay on December 1.",
       },
@@ -388,7 +389,9 @@ describe("sending", () => {
   })
 
   it("replies once per thread within a run, however the model words it", async () => {
-    const tools = createEmailTools(kit.scope({ inboxes: AGENT }), { idempotencyScope: "run_1" })
+    const tools = createEmailTools(kit.scope({ inboxes: AGENT }), {
+      email: { id: "eml_invoice", thread_id: "thr_invoice" },
+    })
     const reply = tools.find((t) => t.name === "reply")!
     const first = (await reply.execute({
       thread_id: "thr_invoice",
@@ -478,7 +481,7 @@ describe("sending", () => {
     expect(thread.messages.find((m: any) => m.id === later.id)!.status).toBe("canceled")
   })
 
-  it("answers Reply-To and copies everyone else on reply-all", async () => {
+  it("leaves Reply-To and reply-all to AI Inbx", async () => {
     fake.add({
       id: "eml_team",
       thread_id: "thr_team",
@@ -494,13 +497,14 @@ describe("sending", () => {
       AGENT,
       "reply",
     )({ thread_id: "thr_team", text: "See you then.", reply_all: true })
-    expect(fake.calls.reply.at(-1)).toMatchObject({
-      body: { to: ["support@client.example"], cc: ["dave@client.example"], reply_all: true },
-    })
+    const { body } = fake.calls.reply.at(-1) as { body: object }
+    expect(body).toMatchObject({ email_id: "eml_team", reply_all: true })
+    expect(body).not.toHaveProperty("to")
+    expect(body).not.toHaveProperty("cc")
     const thread = await tool(kit, AGENT, "get_thread")({ thread_id: "thr_team" })
     expect(thread.messages.at(-1)).toMatchObject({
-      to: ["support@client.example"],
-      cc: ["erin@client.example", "dave@client.example"],
+      to: ["support@client.example", "dave@client.example"],
+      cc: ["erin@client.example"],
     })
   })
 
@@ -600,6 +604,11 @@ describe("a thread through two of our inboxes", () => {
       }).find((t) => t.name === "reply")!
       await reply.execute({ thread_id: "thr_shared", text: `From ${inbox}.` } as never)
     }
+    // Each answers the message it saw, not the thread's latest.
+    expect(fake.calls.reply.slice(-2).map((c: any) => c.body.email_id)).toEqual([
+      "eml_shared_1",
+      "eml_shared_2",
+    ])
   })
 })
 

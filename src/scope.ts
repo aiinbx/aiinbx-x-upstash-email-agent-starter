@@ -1,5 +1,4 @@
 import {
-  addressKey,
   ALL_INBOXES,
   assertName,
   DEFAULT_TENANT,
@@ -45,6 +44,8 @@ export interface ReplyRequest {
   sendAt?: string
   /** Also answer everyone on the message replied to. */
   replyAll?: boolean
+  /** The message to answer. Default: the latest the scope has in the thread. */
+  emailId?: string
 }
 
 export interface SendOptions {
@@ -106,14 +107,6 @@ export function createScope(
   async function assertSender(address: string): Promise<void> {
     const ours = all ? (await ctx.redis.exists(k.inbox(address))) === 1 : inboxes.includes(address)
     if (!ours) throw new NotInScopeError(`Inbox ${address}`)
-  }
-
-  /** The addresses that are none of our inboxes, in any tenant. */
-  async function notOurs(addresses: string[]): Promise<string[]> {
-    const ours = await Promise.all(
-      addresses.map((a) => ctx.redis.exists(addressKey(ctx.prefix, a))),
-    )
-    return addresses.filter((_, i) => !ours[i])
   }
 
   async function assertPending(emailId: string, pending: "draft" | "scheduled"): Promise<void> {
@@ -405,31 +398,29 @@ export function createScope(
     },
 
     /**
-     * Answer the latest message of a thread this scope saw, from the inbox it
-     * went through, honouring Reply-To.
+     * Answer a message of a thread, by default the latest the scope has, from
+     * the inbox it went through. AI Inbx works out whom to, as a mail client
+     * would: the message's Reply-To, else its sender, or when it is ours,
+     * whom it went to.
      */
     async reply(threadId: string, request: ReplyRequest, options: SendOptions = {}) {
       await assertThread(threadId)
       const ids = await emailIds(threadId)
-      const latest = ids.length ? await email(ids[ids.length - 1]!) : null
-      if (!latest) throw new Error(`Thread ${threadId} has no messages in this scope yet`)
+      const id = request.emailId ?? ids.at(-1)
+      if (!id) throw new Error(`Thread ${threadId} has no messages in this scope yet`)
+      const answered = ids.includes(id) ? await email(id) : null
+      if (!answered) throw new NotInScopeError(`Email ${id}`)
       const from =
-        latest.direction === "outbound"
-          ? latest.from.address
-          : (all ? latest.inboxes : latest.inboxes.filter((i) => inboxes.includes(i)))[0]!
-      // AI Inbx works out the recipients from the thread. Only a Reply-To,
-      // which it does not follow, has to be said: then the reply goes there,
-      // and on reply-all the others it was sent to are copied.
-      const replyTo = latest.direction === "inbound" ? latest.reply_to : []
-      const others =
-        replyTo.length && request.replyAll ? await notOurs(latest.to.filter((a) => a !== from)) : []
+        answered.direction === "outbound"
+          ? answered.from.address
+          : (all ? answered.inboxes : answered.inboxes.filter((i) => inboxes.includes(i)))[0]!
       const sent = await ctx.aiinbx.threads.reply(
         threadId,
         {
           from: sender(from),
+          // Named, as the thread's latest may be mail this scope can't see.
+          email_id: answered.id,
           reply_all: request.replyAll ?? false,
-          ...(replyTo.length && { to: replyTo }),
-          ...(others.length && { cc: others }),
           text: request.text,
           html: request.html,
           draft: request.draft,

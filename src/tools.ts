@@ -20,11 +20,16 @@ function defineTool<S extends z.ZodObject>(tool: EmailTool<S>): EmailTool {
 
 export interface EmailToolsOptions {
   /**
-   * One id per agent run, such as the email being handled. Within it, the
-   * agent sends at most one reply per thread and one new email per set of
-   * recipients, whatever the wording: a run retried after a crash, whose
-   * model writes the reply differently, cannot mail twice. `onEmail` gets
-   * tools with this set to the email's id.
+   * The email the agent run handles. A reply in its thread answers it, so
+   * neither mail arriving meanwhile nor, on a retry, the run's own earlier
+   * reply changes whom the reply goes to. `onEmail` gets tools with this set.
+   */
+  email?: { id: string; thread_id: string }
+  /**
+   * One id per agent run; default the email's id. Within it, the agent sends
+   * at most one reply per thread and one new email per set of recipients,
+   * whatever the wording: a run retried after a crash, whose model writes
+   * the reply differently, cannot mail twice.
    */
   idempotencyScope?: string
   /**
@@ -43,10 +48,11 @@ export function createEmailTools(scope: Scope, options: EmailToolsOptions = {}):
    * may send now and schedule one follow-up; the time is left out of the
    * key, so a retry that picks another time cannot schedule a second one.
    */
+  const run = options.idempotencyScope ?? options.email?.id
   async function once(...target: unknown[]): Promise<SendOptions> {
-    if (!options.idempotencyScope) return {}
+    if (!run) return {}
     const bytes = new TextEncoder().encode(
-      JSON.stringify([options.idempotencyScope, scope.tenant, scope.inboxes, target]),
+      JSON.stringify([run, scope.tenant, scope.inboxes, target]),
     )
     const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))
     return { idempotencyKey: Array.from(hash, (b) => b.toString(16).padStart(2, "0")).join("") }
@@ -179,7 +185,7 @@ export function createEmailTools(scope: Scope, options: EmailToolsOptions = {}):
     defineTool({
       name: "reply",
       description:
-        "Reply in a conversation. Goes to the sender of the latest message you have in it (or, if that was you, to whom it went), from the inbox it went through, threaded with the right subject and headers." +
+        "Reply in a conversation. Answers the email you are handling, or in another thread the latest message you have: to its sender, or the Reply-To address it names (if that message was yours, to whom it went), from the inbox it went through, threaded with the right subject and headers." +
         drafted,
       input: z.object({
         thread_id: z.string().describe("The thread id, thr_…"),
@@ -197,7 +203,13 @@ export function createEmailTools(scope: Scope, options: EmailToolsOptions = {}):
         sending(
           scope.reply(
             thread_id,
-            { text, replyAll: reply_all, sendAt: send_at, draft: options.drafts },
+            {
+              text,
+              replyAll: reply_all,
+              sendAt: send_at,
+              draft: options.drafts,
+              emailId: thread_id === options.email?.thread_id ? options.email.id : undefined,
+            },
             await once("reply", thread_id, send_at ? "scheduled" : "now"),
           ),
           send_at

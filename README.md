@@ -144,17 +144,17 @@ await everything.search({ query: "the signed contract" })
 await agent.reply(threadId, { text: "Thanks, on it." })
 ```
 
-| Method                                                   | What it does                                                                                                                        |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `listThreads`                                            | Conversations by latest activity, with subject, status, message count and the latest message. Filter by status, page with `before`. |
-| `getThread`                                              | A thread's messages in the scope, oldest first: sender, recipients, what it says (quoted replies stripped), delivery status, files. |
-| `search`                                                 | Hybrid semantic and keyword search across bodies and attachment contents. Filter by thread, sender, time.                           |
-| `readAttachment`                                         | An attachment as Markdown, in parts for long files. Files without text return a short-lived download link.                          |
-| `send`                                                   | Starts a conversation from one of the scope's inboxes. Recipients AI Inbx suppressed come back in `suppressed`.                     |
-| `reply`                                                  | Answers in a thread from the inbox it went through. AI Inbx works out the recipients; a Reply-To is honoured. Optionally reply-all. |
-| `listDrafts`, `updateDraft`, `sendDraft`, `discardDraft` | Drafts the scope's agents wrote, for a person to approve in your app.                                                               |
-| `cancelScheduled`                                        | Cancels an email the scope scheduled with `sendAt`, before it goes out.                                                             |
-| `setStatus`                                              | Where a conversation stands (`open`, `waiting`, `done`, anything) with a note. Shared by the tenant's scopes, like a team inbox.    |
+| Method                                                   | What it does                                                                                                                                                                       |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `listThreads`                                            | Conversations by latest activity, with subject, status, message count and the latest message. Filter by status, page with `before`.                                                |
+| `getThread`                                              | A thread's messages in the scope, oldest first: sender, recipients, what it says (quoted replies stripped), delivery status, files.                                                |
+| `search`                                                 | Hybrid semantic and keyword search across bodies and attachment contents. Filter by thread, sender, time.                                                                          |
+| `readAttachment`                                         | An attachment as Markdown, in parts for long files. Files without text return a short-lived download link.                                                                         |
+| `send`                                                   | Starts a conversation from one of the scope's inboxes. Recipients AI Inbx suppressed come back in `suppressed`.                                                                    |
+| `reply`                                                  | Answers the latest message the scope has in a thread, from the inbox it went through. AI Inbx works out the recipients from that message, Reply-To included. Optionally reply-all. |
+| `listDrafts`, `updateDraft`, `sendDraft`, `discardDraft` | Drafts the scope's agents wrote, for a person to approve in your app.                                                                                                              |
+| `cancelScheduled`                                        | Cancels an email the scope scheduled with `sendAt`, before it goes out.                                                                                                            |
+| `setStatus`                                              | Where a conversation stands (`open`, `waiting`, `done`, anything) with a note. Shared by the tenant's scopes, like a team inbox.                                                   |
 
 A scope sees only mail that went through its inboxes: another inbox's messages don't exist for it, even on a thread both took part in. It sends only from its own inboxes; an `"all"` scope from any inbox the tenant has. An email's inboxes are the addresses it was delivered to (from the webhook's envelope, so Bcc counts), or for synced mailboxes the mailbox. Never an address the email merely names in To or Cc: that could be anyone's.
 
@@ -164,7 +164,7 @@ What a scope sends is stored right away, so its next read shows it.
 
 `createEmailTools(scope)` turns a scope into eight tools: `list_threads`, `get_thread`, `search_emails`, `read_attachment`, `send_email`, `reply`, `cancel_scheduled`, `set_thread_status`. `send_email` and `reply` take an optional `send_at`: AI Inbx holds the email until then (up to 30 days), so an agent can write a follow-up now and cancel it with `cancel_scheduled` if the customer answers first.
 
-The tools `onEmail` gets carry the email's id as `idempotencyScope`. Within that run the agent sends at most one reply per thread and one new email per set of recipients, keyed on the thread or the recipients, never the wording. A run retried after a crash, whose model phrases the reply differently, gets "you already replied" instead of mailing twice.
+The tools `onEmail` gets know the email they handle: a reply in its thread answers that email, whatever arrives meanwhile, and its id is the `idempotencyScope`. Within that run the agent sends at most one reply per thread and one new email per set of recipients, keyed on the thread or the recipients, never the wording. A run retried after a crash, whose model phrases the reply differently, gets "you already replied" instead of mailing twice.
 
 ### Mail is untrusted input
 

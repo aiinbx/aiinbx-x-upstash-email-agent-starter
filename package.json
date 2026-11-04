@@ -14,7 +14,7 @@
     "@upstash/redis": "^1.41.0",
     "@upstash/vector": "^1.2.3",
     "@upstash/workflow": "^1.5.0",
-    "aiinbx": "^4.0.0",
+    "aiinbx": "^4.2.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

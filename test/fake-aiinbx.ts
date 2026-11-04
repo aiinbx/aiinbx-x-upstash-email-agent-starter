@@ -114,29 +114,39 @@ export function fakeAIInbx() {
 
   const list = (a?: string | string[]) => (typeof a === "string" ? [a] : (a ?? []))
 
-  /** Whom a reply goes to, worked out from the thread as the API does. */
+  /** Each address once, minus those in `skip`. */
+  const distinct = (addresses: string[], skip: string[] = []) =>
+    addresses.filter((a, i) => !skip.includes(a) && addresses.indexOf(a) === i)
+
+  /**
+   * Whom a reply goes to, as the API works it out from the email answered:
+   * its Reply-To, else its sender, or when it is ours, whom it went to.
+   */
   function recipients(
     threadId: string,
     from: string,
-    body: { to?: string | string[]; cc?: string | string[]; reply_all?: boolean },
+    body: {
+      email_id?: string
+      to?: string | string[]
+      cc?: string | string[]
+      reply_all?: boolean
+    },
   ) {
-    const thread = [...emails.values()].filter((e) => e.thread_id === threadId)
-    const latest = thread.at(-1)
-    const ours = new Set([
-      from,
-      ...thread.filter((e) => e.direction === "outbound").map((e) => e.from.address),
-    ])
-    const answered = !latest
-      ? []
-      : latest.direction !== "inbound"
-        ? latest.to
-        : body.reply_all
-          ? [latest.from.address, ...latest.to]
-          : [latest.from.address]
-    const to = body.to ? list(body.to) : answered.filter((a) => !ours.has(a))
-    const copied = body.reply_all && latest ? latest.cc.filter((a) => !ours.has(a)) : []
-    const cc = [...copied, ...list(body.cc)].filter((a) => !to.includes(a))
-    return { to, cc }
+    const answered = body.email_id
+      ? emails.get(body.email_id)
+      : [...emails.values()].filter((e) => e.thread_id === threadId).at(-1)
+    if (!answered || answered.thread_id !== threadId)
+      throw new Error("No such email in this thread")
+    const own = answered.direction === "outbound"
+    const asked = own
+      ? answered.to
+      : answered.reply_to.length
+        ? answered.reply_to
+        : [answered.from.address]
+    const inferred = distinct(body.reply_all && !own ? [...asked, ...answered.to] : asked, [from])
+    const copied = body.reply_all ? distinct(answered.cc, [from, ...inferred]) : []
+    const to = body.to ? list(body.to) : inferred
+    return { to, cc: distinct([...copied, ...list(body.cc)], to) }
   }
 
   function outbound(
@@ -213,6 +223,7 @@ export function fakeAIInbx() {
         threadId: string,
         body: {
           from: { address: string }
+          email_id?: string
           text: string
           to?: string[]
           cc?: string[]

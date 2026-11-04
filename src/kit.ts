@@ -132,7 +132,7 @@ export function createEmailKit(options: EmailKitOptions = {}) {
       const s = scope({ tenant: email.tenant, inboxes: inbox, name: options.name })
       return {
         scope: s,
-        tools: createEmailTools(s, { idempotencyScope: email.id, drafts: options.drafts }),
+        tools: createEmailTools(s, { email, drafts: options.drafts }),
       }
     }
   }
