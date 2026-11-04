@@ -49,9 +49,12 @@ export function assertName(kind: "prefix" | "tenant", value: string): void {
   }
 }
 
-/** Addresses of every tenant's inboxes: mail from one of them is from us. */
-export function addressesKey(prefix: string): string {
-  return `${prefix}:addresses`
+/**
+ * The tenants that use an address as an inbox. Mail from an address with
+ * any tenant is mail from one of our own inboxes.
+ */
+export function addressKey(prefix: string, address: string): string {
+  return `${prefix}:address:${address}`
 }
 
 /**

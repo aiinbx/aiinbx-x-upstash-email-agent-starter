@@ -855,6 +855,9 @@ describe("tenants", () => {
     await kit.deleteTenant("spc_b")
     expect(await kit.scope({ tenant: "spc_b", inboxes: "all" }).listThreads()).toEqual([])
     expect(await redis.keys(`${prefix}:spc_b:*`)).toEqual([])
+    // The address stays ours for the tenants that still use it.
+    expect(await redis.smembers(`${prefix}:address:${AGENT}`)).not.toContain("spc_b")
+    expect(await redis.sismember(`${prefix}:address:${AGENT}`, "spc_a")).toBe(1)
     expect((await vector.info()).namespaces[`${prefix}:spc_b`]).toBeUndefined()
     expect(await kit.scope({ tenant: "spc_a", inboxes: AGENT }).listThreads()).toHaveLength(1)
   })

@@ -1,7 +1,7 @@
 import { NotFoundError, type FullEmail } from "aiinbx"
 import { chunk } from "./chunk"
 import {
-  addressesKey,
+  addressKey,
   ALL_INBOXES,
   blobPaths,
   keys,
@@ -272,8 +272,8 @@ async function writeRecords(
   if (status) tx.set(k.status(email.id), status)
   for (const a of attachments) tx.set(k.attachment(a.id), a)
   tx.hsetnx(k.thread(email.thread_id), "subject", email.subject)
-  tx.sadd(addressesKey(ctx.prefix), stored.inboxes[0]!, ...stored.inboxes.slice(1))
   for (const inbox of [...stored.inboxes, ALL_INBOXES]) {
+    tx.sadd(addressKey(ctx.prefix, inbox), stored.tenant)
     tx.zadd(k.inbox(inbox), { gt: true }, { score: at, member: email.thread_id })
     tx.zadd(k.inboxThread(inbox, email.thread_id), { score: at, member: email.id })
     if (email.status === "draft") tx.zadd(k.drafts(inbox), { score: at, member: email.id })

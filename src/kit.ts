@@ -10,6 +10,8 @@ import {
   type WorkflowReceiver,
 } from "@upstash/workflow"
 import {
+  addressKey,
+  ALL_INBOXES,
   assertName,
   blobPaths,
   DEFAULT_TENANT,
@@ -293,12 +295,21 @@ export function createEmailKit(options: EmailKitOptions = {}) {
   async function deleteTenant(tenant: string): Promise<void> {
     assertName("tenant", tenant)
     const k = keys(prefix, tenant)
+    const inboxPrefix = k.inbox("")
+    const addresses = new Set<string>()
     let cursor = "0"
     do {
       const [next, found] = await ctx.redis.scan(cursor, { match: k.all, count: 1_000 })
+      for (const key of found) {
+        // `…:inbox:{address}` and its sub-keys name the tenant's addresses.
+        const address = key.startsWith(inboxPrefix) && key.slice(inboxPrefix.length).split(":")[0]
+        if (address && address !== ALL_INBOXES) addresses.add(address)
+      }
       if (found.length) await ctx.redis.del(...found)
       cursor = String(next)
     } while (cursor !== "0")
+    // The address stays ours while another tenant still uses it.
+    for (const address of addresses) await ctx.redis.srem(addressKey(prefix, address), tenant)
     await ctx.bucket.del({ prefix: blobPaths(prefix, tenant).all })
     await ctx.index.deleteNamespace(vectorNamespace(prefix, tenant)).catch((error: Error) => {
       // A tenant that never stored text has no namespace.

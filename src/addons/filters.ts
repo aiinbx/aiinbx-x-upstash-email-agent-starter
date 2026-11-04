@@ -10,7 +10,7 @@
  *   })
  */
 import type { EmailCategory } from "aiinbx"
-import { addressesKey } from "../context"
+import { addressKey } from "../context"
 import type { EmailFilter } from "../handle"
 
 /** Every filter must pass. */
@@ -34,7 +34,7 @@ export function skipCategories(...categories: EmailCategory[]): EmailFilter {
  * answer each other forever.
  */
 export const skipOwnInboxes: EmailFilter = async ({ email, ctx }) =>
-  !(await ctx.redis.sismember(addressesKey(ctx.prefix), email.from.address))
+  !(await ctx.redis.exists(addressKey(ctx.prefix, email.from.address)))
 
 /**
  * Handle at most `max` emails per sender and inbox in each window; the rest
