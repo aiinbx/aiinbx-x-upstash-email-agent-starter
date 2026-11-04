@@ -23,6 +23,7 @@ export interface IngestHints {
 /** The attachments an ingest copies, small enough to pass between workflow steps. */
 export interface AttachmentJob {
   tenant: string
+  email_id: string
   id: string
   filename: string
   content_type: string
@@ -53,6 +54,7 @@ export async function planAttachments(ctx: Context, emailId: string): Promise<At
   const tenant = ctx.tenantOf(email.space_id)
   return email.attachments.map((a) => ({
     tenant,
+    email_id: email.id,
     id: a.id,
     filename: a.filename,
     content_type: a.content_type,
@@ -65,11 +67,19 @@ export async function planAttachments(ctx: Context, emailId: string): Promise<At
 /** Copy what AI Inbx still has. A file it has lost is skipped, never retried forever. */
 export async function copyAttachment(ctx: Context, job: AttachmentJob): Promise<void> {
   const paths = blobPaths(ctx.prefix, job.tenant)
-  if (job.available && job.size <= ctx.limits.maxAttachmentBytes) {
-    const bytes = await unlessGone(ctx.aiinbx.attachments.download(job.id))
-    if (bytes) {
-      await ctx.bucket.put(paths.file(job.id, job.filename), bytes, {
+  if (job.available) {
+    // A freshly signed link, streamed straight into Blob: no file is held in
+    // memory, whatever its size.
+    const email = await ctx.aiinbx.emails.retrieve(job.email_id)
+    const url = email.attachments.find((a) => a.id === job.id)?.download_url
+    if (url) {
+      const response = await fetch(url)
+      if (!response.ok || !response.body) {
+        throw new Error(`Downloading attachment ${job.id} failed with ${response.status}`)
+      }
+      await ctx.bucket.put(paths.file(job.id, job.filename), response.body, {
         contentType: job.content_type,
+        size: job.size,
       })
     }
   }

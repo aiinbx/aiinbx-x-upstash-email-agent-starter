@@ -83,7 +83,6 @@ export interface IngestResult {
 }
 
 const DEFAULT_LIMITS: Limits = {
-  maxAttachmentBytes: 25 * 1024 * 1024,
   maxChunksPerDocument: 200,
   maxCharsPerMessage: 6_000,
 }

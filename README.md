@@ -260,7 +260,6 @@ Downtime, or an inbox that had mail before the kit? `kit.backfill()` stores ever
 
 | Option                        | Default |                                                                       |
 | ----------------------------- | ------- | --------------------------------------------------------------------- |
-| `limits.maxAttachmentBytes`   | 25 MB   | Larger files keep their text, not their bytes                         |
 | `limits.maxChunksPerDocument` | 200     | About 360,000 characters embedded per body or attachment              |
 | `limits.maxCharsPerMessage`   | 6,000   | Per message in `getThread`, so one long email can't flood the context |
 

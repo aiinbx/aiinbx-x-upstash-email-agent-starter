@@ -1,5 +1,5 @@
 import type AIInbx from "aiinbx"
-import { ConflictError, NotFoundError, type FullEmail } from "aiinbx"
+import { ConflictError, type FullEmail } from "aiinbx"
 
 /**
  * An in-memory stand-in for the AI Inbx client: the parts the kit calls.
@@ -86,7 +86,10 @@ export function fakeAIInbx() {
       content_type: file.content_type,
       size: file.bytes?.byteLength ?? 1_000,
       cid: null,
-      download_url: file.bytes ? "https://storage.example/signed" : null,
+      // A data URL streams like a signed storage link, without a server.
+      download_url: file.bytes
+        ? `data:${file.content_type.split(";")[0]};base64,${Buffer.from(file.bytes).toString("base64")}`
+        : null,
       expires_at: null,
       preparation: file.text
         ? {
@@ -187,12 +190,6 @@ export function fakeAIInbx() {
       },
     },
     attachments: {
-      download: async (id: string) => {
-        const bytes = files.get(id)!.bytes
-        if (!bytes)
-          throw new NotFoundError(404, { error: { code: "not_found" } }, null, new Headers())
-        return bytes.slice().buffer
-      },
       content: async (id: string) => files.get(id)!.text ?? "",
     },
   }

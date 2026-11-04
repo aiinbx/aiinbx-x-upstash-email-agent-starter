@@ -16,8 +16,6 @@ export interface Context {
 }
 
 export interface Limits {
-  /** Attachments larger than this keep their text but not their bytes. */
-  maxAttachmentBytes: number
   /** Chunks embedded per document, so one huge PDF cannot run up the bill. */
   maxChunksPerDocument: number
   /** Characters of each message `getThread` returns. */

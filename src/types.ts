@@ -38,7 +38,7 @@ export interface StoredAttachment extends AttachmentRef {
   email_id: string
   thread_id: string
   inboxes: string[]
-  /** Blob path of the original bytes. Null when over the size cap or no longer at AI Inbx. */
+  /** Blob path of the original bytes. Null when AI Inbx no longer had them. */
   blob_path: string | null
   /** Blob path of the extracted Markdown or plain text. */
   text_path: string | null
