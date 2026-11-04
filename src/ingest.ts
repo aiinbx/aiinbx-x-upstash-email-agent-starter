@@ -129,9 +129,9 @@ export async function saveEmail(
     })
   }
   await indexEmail(ctx, email, stored)
-  // Delivery events may already have set a later status; a draft's status
-  // only ever moves on by being sent or discarded, which the API knows.
-  const latest = !status || status === "draft" ? email.status : null
+  // Delivery events may already have set a later status. A draft or a
+  // scheduled email only moves on by being sent or canceled, which the API knows.
+  const latest = !status || status === "draft" || status === "scheduled" ? email.status : null
   await writeRecords(ctx, email, stored, attachments, latest)
   return stored
 }

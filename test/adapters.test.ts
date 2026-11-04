@@ -47,7 +47,7 @@ beforeEach(() => {
   calls.length = 0
 })
 
-/** The 7 real tools, on stub clients: construction touches no network. */
+/** The real tools, on stub clients: construction touches no network. */
 const kit = createEmailKit({
   aiinbx: {} as never,
   redis: {} as never,
@@ -58,7 +58,7 @@ const kit = createEmailKit({
 const real = createEmailTools(kit.scope({ inboxes: "agent@example.com" }))
 const realNames = real.map((t) => t.name)
 
-test("createEmailTools returns the 7 tools", () => {
+test("createEmailTools returns the 8 tools", () => {
   expect(realNames).toEqual([
     "list_threads",
     "get_thread",
@@ -66,6 +66,7 @@ test("createEmailTools returns the 7 tools", () => {
     "read_attachment",
     "send_email",
     "reply",
+    "cancel_scheduled",
     "set_thread_status",
   ])
 })

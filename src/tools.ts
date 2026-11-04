@@ -65,6 +65,13 @@ export function createEmailTools(scope: Scope, options: EmailToolsOptions = {}):
     ? " It is saved as a draft for a person to review and send, not sent right away."
     : ""
 
+  const sendAt = z
+    .string()
+    .optional()
+    .describe(
+      "ISO 8601 time, at most 30 days ahead, to send it later instead of now: a follow-up or a reminder. Cancel it with cancel_scheduled.",
+    )
+
   const inboxes = scope.inboxes === "all" ? "any inbox of yours" : scope.inboxes.join(", ")
 
   return [
@@ -149,14 +156,16 @@ export function createEmailTools(scope: Scope, options: EmailToolsOptions = {}):
         cc: z.array(z.string()).optional().describe("Cc addresses."),
         subject: z.string().min(1),
         text: z.string().min(1).describe("The message, plain text."),
+        send_at: sendAt,
       }),
-      execute: async (input) =>
+      execute: async ({ send_at, ...input }) =>
         sending(
           scope.send(
-            { ...input, draft: options.drafts },
+            { ...input, sendAt: send_at, draft: options.drafts },
             await once(
               "send",
               [...input.to, ...(input.cc ?? [])].map((a) => a.toLowerCase()).sort(),
+              send_at ?? null,
             ),
           ),
           "You already sent these recipients an email in this run.",
@@ -178,16 +187,27 @@ export function createEmailTools(scope: Scope, options: EmailToolsOptions = {}):
           .boolean()
           .optional()
           .describe("Also answer everyone on that message. Default false."),
+        send_at: sendAt,
       }),
-      execute: async ({ thread_id, text, reply_all }) =>
+      execute: async ({ thread_id, text, reply_all, send_at }) =>
         sending(
           scope.reply(
             thread_id,
-            { text, replyAll: reply_all, draft: options.drafts },
-            await once("reply", thread_id),
+            { text, replyAll: reply_all, sendAt: send_at, draft: options.drafts },
+            await once("reply", thread_id, send_at ?? null),
           ),
           "You already replied in this thread in this run.",
         ),
+    }),
+
+    defineTool({
+      name: "cancel_scheduled",
+      description:
+        "Cancel an email you scheduled with send_at before it goes out, for example a follow-up the customer no longer needs. get_thread shows scheduled emails with their id.",
+      input: z.object({
+        email_id: z.string().describe("The scheduled email's id, eml_…"),
+      }),
+      execute: ({ email_id }) => scope.cancelScheduled(email_id),
     }),
 
     defineTool({

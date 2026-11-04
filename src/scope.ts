@@ -30,6 +30,8 @@ export interface SendRequest {
   html?: string
   /** Save it for a person to review and send, instead of sending it. */
   draft?: boolean
+  /** ISO 8601 time, at most 30 days ahead: AI Inbx holds the email until then. */
+  sendAt?: string
 }
 
 export interface ReplyRequest {
@@ -37,6 +39,8 @@ export interface ReplyRequest {
   html?: string
   /** Save it for a person to review and send, instead of sending it. */
   draft?: boolean
+  /** ISO 8601 time, at most 30 days ahead: AI Inbx holds the email until then. */
+  sendAt?: string
   /** Also answer everyone on the message replied to. */
   replyAll?: boolean
 }
@@ -102,14 +106,17 @@ export function createScope(
     if (!ours) throw new NotInScopeError(`Inbox ${address}`)
   }
 
-  async function assertDraft(emailId: string): Promise<void> {
+  async function assertPending(emailId: string, pending: "draft" | "scheduled"): Promise<void> {
     const [e, status] = await Promise.all([
       email(emailId),
       ctx.redis.get<string>(k.status(emailId)),
     ])
     const visible = e && (all || e.inboxes.some((i) => inboxes.includes(i)))
-    if (!visible || status !== "draft") throw new NotInScopeError(`Draft ${emailId}`)
+    const what = pending === "draft" ? "Draft" : "Scheduled email"
+    if (!visible || status !== pending) throw new NotInScopeError(`${what} ${emailId}`)
   }
+
+  const assertDraft = (emailId: string) => assertPending(emailId, "draft")
 
   async function summary(threadId: string, at: number): Promise<ThreadSummary> {
     const [meta, ids] = await Promise.all([
@@ -365,13 +372,24 @@ export function createScope(
       await store(emailId)
     },
 
+    /** Cancel an email the scope scheduled, before it goes out. */
+    async cancelScheduled(emailId: string) {
+      await assertPending(emailId, "scheduled")
+      await ctx.aiinbx.emails.cancel(emailId)
+      await store(emailId)
+      return { id: emailId, status: "canceled" as const }
+    },
+
     /** Start a conversation from one of the scope's inboxes. */
     async send(request: SendRequest, options: SendOptions = {}) {
       const from = (request.from ?? (inboxes.length === 1 ? inboxes[0] : undefined))?.toLowerCase()
       if (!from) throw new Error("Say which inbox to send from")
       await assertSender(from)
-      const { from: _, ...body } = request
-      const sent = await ctx.aiinbx.emails.send({ ...body, from: sender(from) }, options)
+      const { from: _, sendAt, ...body } = request
+      const sent = await ctx.aiinbx.emails.send(
+        { ...body, from: sender(from), ...(sendAt && { scheduled_at: sendAt }) },
+        options,
+      )
       await store(sent.id)
       return { id: sent.id, thread_id: sent.thread_id, status: sent.status }
     },
@@ -402,6 +420,7 @@ export function createScope(
           text: request.text,
           html: request.html,
           draft: request.draft,
+          ...(request.sendAt && { scheduled_at: request.sendAt }),
         },
         options,
       )

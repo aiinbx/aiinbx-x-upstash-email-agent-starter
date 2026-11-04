@@ -153,6 +153,7 @@ await agent.reply(threadId, { text: "Thanks, on it." })
 | `send`                                                   | Starts a conversation from one of the scope's inboxes.                                                                              |
 | `reply`                                                  | Answers the latest message the scope saw, from the inbox it went through, honouring Reply-To. Optionally reply-all.                 |
 | `listDrafts`, `updateDraft`, `sendDraft`, `discardDraft` | Drafts the scope's agents wrote, for a person to approve in your app.                                                               |
+| `cancelScheduled`                                        | Cancels an email the scope scheduled with `sendAt`, before it goes out.                                                             |
 | `setStatus`                                              | Where a conversation stands (`open`, `waiting`, `done`, anything) with a note. Shared by the tenant's scopes, like a team inbox.    |
 
 A scope sees only mail that went through its inboxes: another inbox's messages don't exist for it, even on a thread both took part in. It sends only from its own inboxes; an `"all"` scope from any inbox the tenant has. An email's inboxes are the addresses it was delivered to (from the webhook's envelope, so Bcc counts), or for synced mailboxes the mailbox. Never an address the email merely names in To or Cc: that could be anyone's.
@@ -161,7 +162,7 @@ What a scope sends is stored right away, so its next read shows it.
 
 ## Agent tools
 
-`createEmailTools(scope)` turns a scope into seven tools: `list_threads`, `get_thread`, `search_emails`, `read_attachment`, `send_email`, `reply`, `set_thread_status`.
+`createEmailTools(scope)` turns a scope into eight tools: `list_threads`, `get_thread`, `search_emails`, `read_attachment`, `send_email`, `reply`, `cancel_scheduled`, `set_thread_status`. `send_email` and `reply` take an optional `send_at`: AI Inbx holds the email until then (up to 30 days), so an agent can write a follow-up now and cancel it with `cancel_scheduled` if the customer answers first.
 
 The tools `onEmail` gets carry the email's id as `idempotencyScope`. Within that run the agent sends at most one reply per thread and one new email per set of recipients, keyed on the thread or the recipients, never the wording. A run retried after a crash, whose model phrases the reply differently, gets "you already replied" instead of mailing twice.
 

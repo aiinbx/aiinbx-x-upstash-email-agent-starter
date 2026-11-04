@@ -118,6 +118,7 @@ export function fakeAIInbx() {
       subject?: string
       to?: string | string[]
       draft?: boolean
+      scheduled_at?: string
     },
     threadId: string,
   ) {
@@ -127,7 +128,7 @@ export function fakeAIInbx() {
       id: `eml_out_${++seq}`,
       thread_id: threadId,
       direction: "outbound",
-      status: body.draft ? "draft" : "queued",
+      status: body.draft ? "draft" : body.scheduled_at ? "scheduled" : "queued",
       from: { name: null, address: from.address },
       to: typeof body.to === "string" ? [body.to] : (body.to ?? []),
       subject: body.subject ?? "Re: thread",

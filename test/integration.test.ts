@@ -432,6 +432,33 @@ describe("sending", () => {
     expect(thread.messages[0]).toMatchObject({ status: "scheduled", text: "First offer, 5% off." })
   })
 
+  it("schedules a follow-up next to a reply, and cancels it", async () => {
+    const tools = createEmailTools(kit.scope({ inboxes: AGENT }), { idempotencyScope: "run_sched" })
+    const run = (name: string, input: object) =>
+      tools.find((t) => t.name === name)!.execute(input as never) as Promise<any>
+    await run("reply", { thread_id: "thr_invoice", text: "Got it, thanks." })
+    const later = await run("reply", {
+      thread_id: "thr_invoice",
+      text: "Any update on the payment?",
+      send_at: "2026-11-20T09:00:00Z",
+    })
+    expect(later.status).toBe("scheduled")
+    expect(fake.calls.reply.at(-1)).toMatchObject({
+      body: { scheduled_at: "2026-11-20T09:00:00Z" },
+    })
+
+    const other = createEmailTools(kit.scope({ inboxes: OTHER })).find(
+      (t) => t.name === "cancel_scheduled",
+    )!
+    await expect(other.execute({ email_id: later.id } as never)).rejects.toThrow(NotInScopeError)
+    expect(await run("cancel_scheduled", { email_id: later.id })).toEqual({
+      id: later.id,
+      status: "canceled",
+    })
+    const thread = await kit.scope({ inboxes: AGENT }).getThread("thr_invoice")
+    expect(thread.messages.find((m: any) => m.id === later.id)!.status).toBe("canceled")
+  })
+
   it("answers Reply-To and copies everyone else on reply-all", async () => {
     fake.add({
       id: "eml_team",
