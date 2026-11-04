@@ -60,7 +60,7 @@ cp .env.example .env.local
    npx @aiinbx/cli listen --forward-to localhost:3000/webhook  # second terminal, in this folder
    ```
 
-   The AI Inbx CLI picks up `AI_INBX_API_KEY` from `.env.local` when you run it in this folder. Mail `AGENT_INBOX` from any other address, and the dev server prints `[onEmail] default/agent@… ← you@…: subject`. Your agent goes in `onEmail` in `scripts/dev.ts`; [`examples/ai-sdk-agent.ts`](examples/ai-sdk-agent.ts) shows a full one. The MCP endpoint at `localhost:3000/mcp` gives any MCP client the tools for `AGENT_INBOX`.
+   The AI Inbx CLI picks up `AI_INBX_API_KEY` from `.env.local` when you run it in this folder. Mail `AGENT_INBOX` from any other address, and the dev server prints `[onEmail] default/agent@… ← you@…: subject`. Add `ANTHROPIC_API_KEY` to `.env.local` and restart: the dev server then runs [`examples/ai-sdk-agent.ts`](examples/ai-sdk-agent.ts), which reads the thread, searches the inbox when it needs to, and writes a draft reply for you to approve. Your own agent goes in `onEmail` in `scripts/dev.ts`. The MCP endpoint at `localhost:3000/mcp` gives any MCP client the tools for `AGENT_INBOX`.
 
 ## Use it in your app
 
