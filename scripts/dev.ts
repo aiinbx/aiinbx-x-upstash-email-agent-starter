@@ -15,7 +15,10 @@ const inbox = process.env.AGENT_INBOX ?? "agent@email-agent-starter.aiinbx.app"
 const kit = createEmailKit({
   workflow:
     process.env.QSTASH_DEV || process.env.QSTASH_TOKEN
-      ? { url: `http://localhost:${port}/workflow` }
+      ? {
+          url: `http://localhost:${port}/workflow`,
+          followUpSeconds: Number(process.env.FOLLOW_UP_SECONDS) || undefined,
+        }
       : undefined,
   onEmail: async ({ email, tenant, inbox }) => {
     console.log(`[onEmail] ${tenant}/${inbox} ← ${email.from.address}: ${email.subject}`)

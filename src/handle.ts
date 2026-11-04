@@ -39,7 +39,8 @@ export interface HandleOptions {
   shouldHandle?: EmailFilter
 }
 
-export type HandleOutcome = "handled" | "no_handler" | "skipped" | "duplicate" | "in_progress"
+export type HandleOutcome =
+  "handled" | "no_handler" | "skipped" | "superseded" | "duplicate" | "in_progress"
 
 /** How long a claim holds while its handler runs; a run that dies frees it after this. */
 const LEASE_SECONDS = 15 * 60
@@ -58,6 +59,8 @@ export async function handleEmail(
   inbox: string,
   options: HandleOptions & {
     owner: string
+    /** Leave an email to a newer one in its thread, whose run answers both. */
+    answerLatestOnly?: boolean
     /** The scope and tools a handler gets for an inbox. */
     forInbox: (inbox: string) => Pick<HandlerArgs, "scope" | "tools">
   },
@@ -68,6 +71,7 @@ export async function handleEmail(
   if (options.shouldHandle && !(await options.shouldHandle({ email, tenant, inbox, ctx }))) {
     return "skipped"
   }
+  if (options.answerLatestOnly && (await hasNewerInbound(ctx, email, inbox))) return "superseded"
 
   const key = keys(ctx.prefix, tenant).handled(email.id, inbox)
   const mine = `running:${options.owner}`
@@ -85,4 +89,17 @@ export async function handleEmail(
   }
   await ctx.redis.set(key, "done")
   return "handled"
+}
+
+/** Whether the inbox got a later message from the other side in the same thread. */
+async function hasNewerInbound(ctx: Context, email: StoredEmail, inbox: string): Promise<boolean> {
+  const k = keys(ctx.prefix, email.tenant)
+  const newer = await ctx.redis.zrange<string[]>(
+    k.inboxThread(inbox, email.thread_id),
+    `(${Date.parse(email.created_at)}`,
+    "+inf",
+    { byScore: true },
+  )
+  const later = await Promise.all(newer.map((id) => ctx.redis.get<StoredEmail>(k.email(id))))
+  return later.some((e) => e?.direction === "inbound")
 }

@@ -65,6 +65,13 @@ export interface EmailKitOptions extends HandleOptions {
      * For a cap per tenant: `({ tenant }) => ({ key: tenant, parallelism: 5 })`.
      */
     flowControl?: (email: { tenant: string; threadId: string }) => TriggerOptions["flowControl"]
+    /**
+     * Wait this long after an email arrives before the agent runs. A
+     * follow-up in the same thread within the window is answered together
+     * with it: the earlier email's run steps aside, and the latest one's run
+     * hands the agent the whole thread. The wait holds no flow-control slot.
+     */
+    followUpSeconds?: number
   }
   limits?: Partial<Limits>
 }
@@ -230,6 +237,8 @@ export function createEmailKit(options: EmailKitOptions = {}) {
           return { tenant: email.tenant, inboxes: email.inboxes }
         })
         if (!shouldHandle) return
+        const followUp = options.workflow?.followUpSeconds
+        if (followUp) await context.sleep("wait-for-follow-ups", followUp)
         for (const inbox of inboxes) {
           await context.run(`handle-${inbox}`, async () => {
             const email = await ctx.redis.get<StoredEmail>(keys(prefix, tenant).email(email_id))
@@ -239,6 +248,7 @@ export function createEmailKit(options: EmailKitOptions = {}) {
             return handleEmail(ctx, email, inbox, {
               ...options,
               owner: context.workflowRunId,
+              answerLatestOnly: !!followUp,
               forInbox: forInbox(email),
             })
           })

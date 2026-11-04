@@ -10,6 +10,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { createEmailKit, createEmailTools, NotInScopeError, type EmailKitOptions } from "../src"
 import type { ChunkMetadata } from "../src/context"
 import { allOf, senderLimit, skipCategories, skipOwnInboxes } from "../src/addons/filters"
+import { handleEmail } from "../src/handle"
+import type { StoredEmail } from "../src/types"
 import { fakeAIInbx } from "./fake-aiinbx"
 
 const AGENT = "agent@acme.test"
@@ -580,6 +582,40 @@ describe("handler", () => {
     release()
     expect((await first).status).toBe(204)
     expect((await deliver()).status).toBe(204)
+    expect(onEmail).toHaveBeenCalledTimes(1)
+  })
+
+  it("answers a quick follow-up together with the email before it", async () => {
+    const onEmail = vi.fn(async () => {})
+    const { fake, kit } = setup({ onEmail })
+    const customer = { name: null, address: "carol@client.example" }
+    fake.add({
+      id: "eml_order",
+      thread_id: "thr_order",
+      to: [AGENT],
+      from: customer,
+      created_at: "2026-11-04T12:00:00.000Z",
+    })
+    fake.add({
+      id: "eml_fix",
+      thread_id: "thr_order",
+      to: [AGENT],
+      from: customer,
+      created_at: "2026-11-04T12:00:04.000Z",
+    })
+    for (const id of ["eml_order", "eml_fix"])
+      await kit.ingest(id, { hints: { recipients: [AGENT] }, handle: false })
+    const handle = (id: string) =>
+      kit.ctx.redis.get<StoredEmail>(`${prefix}:default:email:${id}`).then((email) =>
+        handleEmail(kit.ctx, email!, AGENT, {
+          onEmail,
+          owner: "run",
+          answerLatestOnly: true,
+          forInbox: () => ({ scope: kit.scope({ inboxes: AGENT }), tools: [] }),
+        }),
+      )
+    expect(await handle("eml_order")).toBe("superseded")
+    expect(await handle("eml_fix")).toBe("handled")
     expect(onEmail).toHaveBeenCalledTimes(1)
   })
 
