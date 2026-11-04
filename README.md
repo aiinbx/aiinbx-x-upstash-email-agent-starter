@@ -7,7 +7,7 @@ An example implementation of email infrastructure for AI agents: how to receive,
 - **[AI Inbx](https://aiinbx.com)** sends and receives the mail, threads it, strips quoted replies, classifies auto-replies, and turns attachments (PDFs, Office files, scans) into Markdown.
 - **Upstash Redis** keeps the inboxes: threads, messages, status, and the bookkeeping that stops an email being handled twice.
 - **Upstash Vector** makes every email and attachment searchable by meaning and keywords, in any language, with its built-in embedding model.
-- **Upstash Blob** keeps the attachments and HTML bodies, because the links AI Inbx hands out expire after an hour.
+- **Upstash Blob** keeps your own copy of the attachments and HTML bodies: AI Inbx delivers the mail, your app keeps it.
 - **Upstash Workflow** runs each incoming email as retryable steps.
 
 Plain TypeScript, web-standard `Request`/`Response` handlers, no framework required. The agent tools are shown with adapters for the AI SDK, TanStack AI, Mastra, Pi, OpenAI Agents, LangChain and MCP.
