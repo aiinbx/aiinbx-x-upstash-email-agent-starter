@@ -6,18 +6,26 @@
  */
 import { createEmailKit, createEmailTools } from "../src"
 import { createMcpHandler } from "../src/adapters/mcp"
+import { draftingAgent } from "../examples/ai-sdk-agent"
 import { serve } from "./serve"
 
 const port = Number(process.env.PORT ?? 3000)
 const inbox = process.env.AGENT_INBOX ?? "agent@email-agent-starter.aiinbx.app"
+
+const agent = process.env.ANTHROPIC_API_KEY ? draftingAgent : null
 
 const kit = createEmailKit({
   workflow:
     process.env.QSTASH_DEV || process.env.QSTASH_TOKEN
       ? { url: `http://localhost:${port}/workflow` }
       : undefined,
-  onEmail: async ({ email, tenant, inbox }) => {
-    console.log(`[onEmail] ${tenant}/${inbox} ← ${email.from.address}: ${email.subject}`)
+  // With a model key, the example agent writes drafts; without one, mail is only logged.
+  ...(agent && { drafts: agent.drafts, shouldHandle: agent.shouldHandle }),
+  onEmail: async (args) => {
+    console.log(
+      `[onEmail] ${args.tenant}/${args.inbox} ← ${args.email.from.address}: ${args.email.subject}`,
+    )
+    await agent?.onEmail(args)
   },
 })
 const mcp = createMcpHandler(() => createEmailTools(kit.scope({ inboxes: inbox })))

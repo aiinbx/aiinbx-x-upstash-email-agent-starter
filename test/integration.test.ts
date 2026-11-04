@@ -532,6 +532,14 @@ describe("a thread through two of our inboxes", () => {
     )({ thread_id: "thr_shared", status: "done", note: "support note" })
     const seen = await tool(kit, OTHER, "get_thread")({ thread_id: "thr_shared" })
     expect([seen.status, seen.note]).toEqual(["done", "support note"])
+
+    // One email handled by both inboxes' agents: each may answer once.
+    for (const inbox of [AGENT, OTHER]) {
+      const reply = createEmailTools(kit.scope({ inboxes: inbox }), {
+        idempotencyScope: "eml_shared_2",
+      }).find((t) => t.name === "reply")!
+      await reply.execute({ thread_id: "thr_shared", text: `From ${inbox}.` } as never)
+    }
   })
 })
 

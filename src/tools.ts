@@ -44,7 +44,7 @@ export function createEmailTools(scope: Scope, options: EmailToolsOptions = {}):
   async function once(...target: unknown[]): Promise<SendOptions> {
     if (!options.idempotencyScope) return {}
     const bytes = new TextEncoder().encode(
-      JSON.stringify([options.idempotencyScope, scope.tenant, target]),
+      JSON.stringify([options.idempotencyScope, scope.tenant, scope.inboxes, target]),
     )
     const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))
     return { idempotencyKey: Array.from(hash, (b) => b.toString(16).padStart(2, "0")).join("") }
