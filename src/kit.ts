@@ -1,0 +1,312 @@
+import AIInbx from "aiinbx"
+import { verifyWebhookRequest, WebhookSignatureError } from "aiinbx/webhooks"
+import { Bucket } from "@upstash/blob"
+import { Redis } from "@upstash/redis"
+import { Index } from "@upstash/vector"
+import {
+  Client as WorkflowClient,
+  serve,
+  type TriggerOptions,
+  type WorkflowReceiver,
+} from "@upstash/workflow"
+import {
+  assertName,
+  blobPaths,
+  DEFAULT_TENANT,
+  keys,
+  vectorNamespace,
+  type ChunkMetadata,
+  type Context,
+  type Limits,
+} from "./context"
+import { handleEmail, type HandleOptions, type HandleOutcome } from "./handle"
+import { copyAttachment, ingestEmail, planAttachments, saveEmail, type IngestHints } from "./ingest"
+import { createScope, type ScopeOptions } from "./scope"
+import { createEmailTools } from "./tools"
+import type { DeliveryStatus, StoredEmail } from "./types"
+
+export interface EmailKitOptions extends HandleOptions {
+  /** Defaults read `AI_INBX_API_KEY`, `UPSTASH_REDIS_REST_*`, `UPSTASH_VECTOR_REST_*`, `UPSTASH_BLOB_TOKEN`. */
+  aiinbx?: AIInbx
+  redis?: Redis
+  vector?: Index<ChunkMetadata>
+  bucket?: Bucket
+  /** Signing secret of the AI Inbx webhook endpoint. Default: `AI_INBX_WEBHOOK_SECRET`. */
+  webhookSecret?: string
+  /**
+   * Prefix of every Redis key, Blob path and Vector namespace, one per
+   * environment. Letters, digits, `-`, `_` and `.`. Default `mail`.
+   */
+  prefix?: string
+  /**
+   * The tenant an AI Inbx space's mail belongs to. Default: the space's id,
+   * and `default` for mail outside spaces. Each tenant's mail, files and
+   * vectors are stored apart.
+   */
+  tenantOf?: (spaceId: string | null) => string
+  /** Display name on mail the handler's tools send. */
+  name?: string
+  /** Have the handler's tools save drafts for a person to approve instead of sending. */
+  drafts?: boolean
+  /**
+   * Run each email through Upstash Workflow: the webhook only enqueues, and
+   * every step retries on its own. `url` is where `kit.workflow` is mounted.
+   * Signatures are checked with `QSTASH_CURRENT_SIGNING_KEY` and
+   * `QSTASH_NEXT_SIGNING_KEY`, or the `receiver` given. Without `workflow`,
+   * the webhook stores and handles each email before it answers.
+   */
+  workflow?: {
+    url: string
+    client?: WorkflowClient
+    receiver?: WorkflowReceiver
+    /**
+     * Which emails wait for each other. Default: one at a time per thread,
+     * so two emails of one conversation never reach the handler at once.
+     * For a cap per tenant: `({ tenant }) => ({ key: tenant, parallelism: 5 })`.
+     */
+    flowControl?: (email: { tenant: string; threadId: string }) => TriggerOptions["flowControl"]
+  }
+  limits?: Partial<Limits>
+}
+
+export interface IngestResult {
+  email: StoredEmail
+  /** What `onEmail` did, per inbox the email reached. */
+  outcomes: Record<string, HandleOutcome>
+}
+
+const DEFAULT_LIMITS: Limits = {
+  maxAttachmentBytes: 25 * 1024 * 1024,
+  maxChunksPerDocument: 200,
+  maxCharsPerMessage: 6_000,
+}
+
+const STATUS_EVENTS: Record<string, DeliveryStatus> = {
+  "email.delivered": "delivered",
+  "email.bounced": "bounced",
+  "email.failed": "failed",
+  "email.complained": "complained",
+}
+
+export type EmailKit = ReturnType<typeof createEmailKit>
+
+export function createEmailKit(options: EmailKitOptions = {}) {
+  const prefix = options.prefix ?? "mail"
+  assertName("prefix", prefix)
+  const ctx: Context = {
+    aiinbx: options.aiinbx ?? new AIInbx(),
+    redis: options.redis ?? Redis.fromEnv(),
+    index: options.vector ?? (Index.fromEnv() as Index<ChunkMetadata>),
+    bucket: options.bucket ?? Bucket.fromEnv(),
+    prefix,
+    limits: { ...DEFAULT_LIMITS, ...options.limits },
+    tenantOf: (spaceId) => {
+      const tenant = options.tenantOf ? options.tenantOf(spaceId) : (spaceId ?? DEFAULT_TENANT)
+      assertName("tenant", tenant)
+      return tenant
+    },
+  }
+
+  /** A tenant's mail as some of its inboxes see it. Tools and your own app read through it. */
+  function scope(scopeOptions: ScopeOptions) {
+    return createScope(ctx, (id) => ingest(id, { handle: false }), scopeOptions)
+  }
+
+  /** The scope and tools a handler gets: acting as the inbox the email reached. */
+  function forInbox(email: StoredEmail) {
+    return (inbox: string) => {
+      const s = scope({ tenant: email.tenant, inboxes: inbox, name: options.name })
+      return {
+        scope: s,
+        tools: createEmailTools(s, { idempotencyScope: email.id, drafts: options.drafts }),
+      }
+    }
+  }
+
+  async function handle(email: StoredEmail, owner: string) {
+    const outcomes: Record<string, HandleOutcome> = {}
+    for (const inbox of email.inboxes) {
+      outcomes[inbox] = await handleEmail(ctx, email, inbox, {
+        ...options,
+        owner,
+        forInbox: forInbox(email),
+      })
+    }
+    return outcomes
+  }
+
+  /** Store an email, and unless `handle` is false hand it to `onEmail`, all in this call. */
+  async function ingest(
+    emailId: string,
+    { hints, handle: run = true }: { hints?: IngestHints; handle?: boolean } = {},
+  ): Promise<IngestResult> {
+    const email = await ingestEmail(ctx, emailId, hints)
+    return { email, outcomes: run ? await handle(email, crypto.randomUUID()) : {} }
+  }
+
+  const workflowClient = options.workflow
+    ? (options.workflow.client ?? new WorkflowClient({ token: env("QSTASH_TOKEN") }))
+    : null
+
+  /** False when another delivery of the same email is still being handled. */
+  async function enqueue(
+    payload: WorkflowPayload,
+    at: { spaceId: string | null; threadId: string },
+  ): Promise<boolean> {
+    if (!options.workflow || !workflowClient) {
+      const { outcomes } = await ingest(payload.email_id, payload)
+      return !Object.values(outcomes).includes("in_progress")
+    }
+    const tenant = ctx.tenantOf(at.spaceId)
+    await workflowClient.trigger({
+      url: options.workflow.url,
+      body: payload,
+      flowControl: options.workflow.flowControl
+        ? options.workflow.flowControl({ tenant, threadId: at.threadId })
+        : { key: `${prefix}-${tenant}-${at.threadId}`, parallelism: 1 },
+      label: "email",
+    })
+    return true
+  }
+
+  /** `POST` handler for the AI Inbx webhook endpoint. Web-standard: mount it anywhere. */
+  async function webhook(request: Request): Promise<Response> {
+    const secret = options.webhookSecret ?? env("AI_INBX_WEBHOOK_SECRET")
+    if (!secret) throw new Error("Set AI_INBX_WEBHOOK_SECRET or pass webhookSecret")
+    let event
+    try {
+      event = await verifyWebhookRequest(request, secret)
+    } catch (error) {
+      if (error instanceof WebhookSignatureError) {
+        return Response.json({ error: error.message }, { status: 401 })
+      }
+      throw error
+    }
+    const at = { spaceId: event.space_id }
+    let done = true
+    if (event.type === "email.received") {
+      const { email_id, thread_id, domain_id, to } = event.data
+      // Envelope recipients are exact for mail received on a domain; mail
+      // synced from a mailbox is filed under that mailbox.
+      const hints = domain_id ? { recipients: to } : {}
+      done = await enqueue({ email_id, hints, handle: true }, { ...at, threadId: thread_id })
+    } else if (event.type === "email.sent") {
+      const { email_id, thread_id } = event.data
+      done = await enqueue({ email_id, hints: {}, handle: true }, { ...at, threadId: thread_id })
+    } else if (event.type in STATUS_EVENTS && "email_id" in event.data) {
+      const k = keys(prefix, ctx.tenantOf(event.space_id))
+      await ctx.redis.set(k.status(event.data.email_id), STATUS_EVENTS[event.type])
+    }
+    // Still being handled by an earlier delivery: ask AI Inbx to try again
+    // later, so the email is not given up on if that run dies.
+    if (!done) return new Response(null, { status: 503, headers: { "Retry-After": "60" } })
+    return new Response(null, { status: 204 })
+  }
+
+  /**
+   * `POST` handler for Upstash Workflow, mounted at `workflow.url`. Built on
+   * first use: `serve` starts a local QStash under `QSTASH_DEV`, which a kit
+   * that never runs a workflow has no use for.
+   */
+  let workflowHandler: ((request: Request) => Promise<Response>) | undefined
+  const workflow = (request: Request) => (workflowHandler ??= createWorkflowHandler())(request)
+  function createWorkflowHandler() {
+    const dev = ["true", "1"].includes(env("QSTASH_DEV") ?? "")
+    const signed = env("QSTASH_CURRENT_SIGNING_KEY") && env("QSTASH_NEXT_SIGNING_KEY")
+    if (!dev && !signed && !options.workflow?.receiver) {
+      // Without keys `serve` accepts unsigned requests: anyone could feed it emails.
+      throw new Error("Set QSTASH_CURRENT_SIGNING_KEY and QSTASH_NEXT_SIGNING_KEY")
+    }
+    return serve<WorkflowPayload>(
+      async (context) => {
+        const { email_id, hints, handle: shouldHandle } = context.requestPayload
+        const jobs = await context.run("plan", () => planAttachments(ctx, email_id))
+        for (const job of jobs) {
+          await context.run(`attachment-${job.id}`, () => copyAttachment(ctx, job))
+        }
+        // Step results travel through QStash: keep them small.
+        const { tenant, inboxes } = await context.run("save", async () => {
+          const email = await saveEmail(ctx, email_id, hints)
+          return { tenant: email.tenant, inboxes: email.inboxes }
+        })
+        if (!shouldHandle) return
+        for (const inbox of inboxes) {
+          await context.run(`handle-${inbox}`, async () => {
+            const email = await ctx.redis.get<StoredEmail>(keys(prefix, tenant).email(email_id))
+            if (!email) throw new Error(`Email ${email_id} is not stored`)
+            // The run owns its claim: a retried step takes it back. Another
+            // run of the same email leaves it to the owner.
+            return handleEmail(ctx, email, inbox, {
+              ...options,
+              owner: context.workflowRunId,
+              forInbox: forInbox(email),
+            })
+          })
+        }
+      },
+      { url: options.workflow?.url, receiver: options.workflow?.receiver },
+    ).handler
+  }
+
+  /**
+   * Store every email created since the last backfill, oldest first: after
+   * downtime, or to load a mailbox that already has mail. Only stores: an
+   * agent should not answer months of old mail. `handle: true` hands each
+   * email to `onEmail` too. `since` overrides the saved position.
+   */
+  async function backfill({ since, handle = false }: { since?: string; handle?: boolean } = {}) {
+    const cursorKey = `${prefix}:backfill:cursor`
+    let cursor = since ?? (await ctx.redis.get<string>(cursorKey))
+    let count = 0
+    for await (const email of ctx.aiinbx.emails.list({
+      order: "asc",
+      limit: 100,
+      // `after` leaves the instant itself out; step back so an email that
+      // shares the last one's millisecond is not skipped. Storing twice is harmless.
+      ...(cursor && { after: new Date(Date.parse(cursor) - 1).toISOString() }),
+    })) {
+      if (email.status === "draft" || email.status === "scheduled") continue
+      await enqueue(
+        { email_id: email.id, hints: {}, handle },
+        { spaceId: email.space_id, threadId: email.thread_id },
+      )
+      cursor = email.created_at
+      await ctx.redis.set(cursorKey, cursor)
+      count++
+    }
+    return { count, cursor }
+  }
+
+  /**
+   * Delete everything stored for a tenant: its mail, files and vectors. For a
+   * customer who leaves. Mail at AI Inbx stays; delete the space there too.
+   */
+  async function deleteTenant(tenant: string): Promise<void> {
+    assertName("tenant", tenant)
+    const k = keys(prefix, tenant)
+    let cursor = "0"
+    do {
+      const [next, found] = await ctx.redis.scan(cursor, { match: k.all, count: 1_000 })
+      if (found.length) await ctx.redis.del(...found)
+      cursor = String(next)
+    } while (cursor !== "0")
+    await ctx.bucket.del({ prefix: blobPaths(prefix, tenant).all })
+    await ctx.index.deleteNamespace(vectorNamespace(prefix, tenant)).catch((error: Error) => {
+      // A tenant that never stored text has no namespace.
+      if (!/not found|does not exist/i.test(error.message)) throw error
+    })
+  }
+
+  return { ctx, scope, webhook, workflow, ingest, backfill, deleteTenant }
+}
+
+interface WorkflowPayload {
+  email_id: string
+  hints: IngestHints
+  handle: boolean
+}
+
+/** Runtimes without `process` (Workers) pass every client and secret explicitly. */
+function env(name: string): string | undefined {
+  return globalThis.process?.env?.[name]
+}
