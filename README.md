@@ -150,8 +150,8 @@ await agent.reply(threadId, { text: "Thanks, on it." })
 | `getThread`                                              | A thread's messages in the scope, oldest first: sender, recipients, what it says (quoted replies stripped), delivery status, files. |
 | `search`                                                 | Hybrid semantic and keyword search across bodies and attachment contents. Filter by thread, sender, time.                           |
 | `readAttachment`                                         | An attachment as Markdown, in parts for long files. Files without text return a short-lived download link.                          |
-| `send`                                                   | Starts a conversation from one of the scope's inboxes.                                                                              |
-| `reply`                                                  | Answers the latest message the scope saw, from the inbox it went through, honouring Reply-To. Optionally reply-all.                 |
+| `send`                                                   | Starts a conversation from one of the scope's inboxes. Recipients AI Inbx suppressed come back in `suppressed`.                     |
+| `reply`                                                  | Answers in a thread from the inbox it went through. AI Inbx works out the recipients; a Reply-To is honoured. Optionally reply-all. |
 | `listDrafts`, `updateDraft`, `sendDraft`, `discardDraft` | Drafts the scope's agents wrote, for a person to approve in your app.                                                               |
 | `cancelScheduled`                                        | Cancels an email the scope scheduled with `sendAt`, before it goes out.                                                             |
 | `setStatus`                                              | Where a conversation stands (`open`, `waiting`, `done`, anything) with a note. Shared by the tenant's scopes, like a team inbox.    |
@@ -252,17 +252,19 @@ An agent that replies on its own should use at least the first two: an agent ans
 
 ## Where things live
 
-| Store  | Contents                                                                                                                                                                                                                                                                                                              |
-| ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Redis  | Under `{prefix}:{tenant}`: `email:{id}` message JSON · `:status` delivery status · `attachment:{id}` · `thread:{id}` subject, status, note · `inbox:{address}` the inbox's threads by latest activity · `…:thread:{id}` its messages of that thread by time · `inbox:*` the same for all inboxes · `handled:…` claims |
-| Vector | Namespace `{prefix}:{tenant}`. Chunks of each body and attachment, id `{email}#{body\|attachment}#{n}`, metadata `email_id, thread_id, inboxes, from, subject, created_at, source, attachment_id, filename`                                                                                                           |
-| Blob   | Under `{prefix}/{tenant}`: `attachments/{id}/{filename}` original file · `…/content.md` extracted text · `emails/{id}/body.html`                                                                                                                                                                                      |
+| Store  | Contents                                                                                                                                                                                                                                                                                                                            |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Redis  | Under `{prefix}:{tenant}`: `email:{id}` message JSON · `:status` delivery status, forward only · `attachment:{id}` · `thread:{id}` subject, status, note · `inbox:{address}` the inbox's threads by latest activity · `…:thread:{id}` its messages of that thread by time · `inbox:*` the same for all inboxes · `handled:…` claims |
+| Vector | Namespace `{prefix}:{tenant}`. Chunks of each body and attachment, id `{email}#{body\|attachment}#{n}`, metadata `email_id, thread_id, inboxes, from, subject, created_at, source, attachment_id, filename`                                                                                                                         |
+| Blob   | Under `{prefix}/{tenant}`: `attachments/{id}/{filename}` original file · `…/content.md` extracted text · `emails/{id}/body.html`                                                                                                                                                                                                    |
 
 Every write is keyed by AI Inbx ids, so storing an email twice changes nothing, and storing it again never takes it away from an inbox that had it. `prefix` (default `mail`; letters, digits, `-`, `_`, `.`) separates environments that share the same Upstash stores.
 
 ## Catching up
 
-Downtime, or an inbox that had mail before the kit? `kit.backfill()` stores every email created since the last backfill, oldest first, and remembers where it stopped. It only stores: an agent shouldn't answer months of old mail. `kit.backfill({ since: "2026-01-01T00:00:00Z" })` starts from a date, and `handle: true` hands each email to `onEmail` too, for catching up after an outage.
+After downtime, `kit.catchUp()` reads the events AI Inbx recorded while nobody was listening and acts on them as the webhook would have: new mail is stored and handed to `onEmail`, delivery outcomes are recorded. It remembers where it stopped; pass `since` the first time. Mail already answered is not answered again, and statuses only move forward, so running it twice is harmless.
+
+An inbox that had mail before the kit? `kit.backfill()` stores every email created since the last backfill, oldest first, without handing it to `onEmail`: an agent shouldn't answer months of old mail. `kit.backfill({ since: "2026-01-01T00:00:00Z" })` starts from a date.
 
 ## Limits
 

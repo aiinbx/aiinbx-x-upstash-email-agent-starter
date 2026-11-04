@@ -372,14 +372,19 @@ describe("sending", () => {
       threadId: "thr_invoice",
       body: {
         from: { name: "Agent", address: AGENT },
-        to: ["anna@vendor.example"],
+        reply_all: false,
         text: "We pay on December 1.",
       },
       options: {},
     })
+    expect((fake.calls.reply[0] as { body: object }).body).not.toHaveProperty("to")
     const thread = await tool(kit, AGENT, "get_thread")({ thread_id: "thr_invoice" })
     expect(thread.messages.map((m: any) => m.id)).toEqual(["eml_invoice", sent.id])
-    expect(thread.messages[1]).toMatchObject({ direction: "outbound", status: "queued" })
+    expect(thread.messages[1]).toMatchObject({
+      direction: "outbound",
+      status: "queued",
+      to: ["anna@vendor.example"],
+    })
   })
 
   it("replies once per thread within a run, however the model words it", async () => {
@@ -452,6 +457,14 @@ describe("sending", () => {
     expect(fake.calls.reply.at(-1)).toMatchObject({
       body: { scheduled_at: "2026-11-20T09:00:00Z" },
     })
+    // A retried run that picks another time still schedules only one.
+    await expect(
+      run("reply", {
+        thread_id: "thr_invoice",
+        text: "Any update on the payment?",
+        send_at: "2026-11-21T09:00:00Z",
+      }),
+    ).rejects.toThrow("already scheduled")
 
     const other = createEmailTools(kit.scope({ inboxes: OTHER })).find(
       (t) => t.name === "cancel_scheduled",
@@ -482,10 +495,12 @@ describe("sending", () => {
       "reply",
     )({ thread_id: "thr_team", text: "See you then.", reply_all: true })
     expect(fake.calls.reply.at(-1)).toMatchObject({
-      body: {
-        to: ["support@client.example"],
-        cc: ["dave@client.example", "erin@client.example"],
-      },
+      body: { to: ["support@client.example"], cc: ["dave@client.example"], reply_all: true },
+    })
+    const thread = await tool(kit, AGENT, "get_thread")({ thread_id: "thr_team" })
+    expect(thread.messages.at(-1)).toMatchObject({
+      to: ["support@client.example"],
+      cc: ["erin@client.example", "dave@client.example"],
     })
   })
 
@@ -503,11 +518,21 @@ describe("sending", () => {
     expect(threads[0].id).toBe(sent.thread_id)
   })
 
-  it("records delivery status from webhook events", async () => {
-    const response = await kit.webhook(await signed("email.bounced", { email_id: "eml_out_1" }))
-    expect(response.status).toBe(204)
-    const thread = await tool(kit, AGENT, "get_thread")({ thread_id: "thr_invoice" })
-    expect(thread.messages.find((m: any) => m.id === "eml_out_1").status).toBe("bounced")
+  it("records delivery status from webhook events, only ever moving it forward", async () => {
+    const status = async () => {
+      const thread = await tool(kit, AGENT, "get_thread")({ thread_id: "thr_invoice" })
+      return thread.messages.find((m: any) => m.id === "eml_out_1").status
+    }
+    const event = async (type: string, data: object = {}) =>
+      expect(
+        (await kit.webhook(await signed(type, { email_id: "eml_out_1", ...data }))).status,
+      ).toBe(204)
+    await event("email.bounced", { permanent: false })
+    expect(await status()).toBe("queued")
+    await event("email.bounced", { permanent: true })
+    expect(await status()).toBe("bounced")
+    await event("email.delivered") // late, out of order
+    expect(await status()).toBe("bounced")
   })
 })
 
@@ -812,11 +837,39 @@ describe("backfill", () => {
       to: [AGENT],
       created_at: "2026-01-02T00:00:00.000Z",
     })
-    const next = await kit.backfill({ handle: true })
-    expect(next.cursor).toBe("2026-01-02T00:00:00.000Z")
-    expect(onEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ inbox: AGENT, email: expect.objectContaining({ id: "eml_new" }) }),
-    )
+    // The last minute is read again: the earlier two count, stored once.
+    expect(await kit.backfill()).toMatchObject({ count: 3, cursor: "2026-01-02T00:00:00.000Z" })
+    expect(onEmail).not.toHaveBeenCalled()
+  })
+
+  it("catches up on missed events: answers new mail, records outcomes", async () => {
+    const onEmail = vi.fn(async () => {})
+    const { fake, kit } = setup({ onEmail, prefix: `${prefix}-backfill` })
+    fake.add({ id: "eml_missed", thread_id: "thr_missed", to: [AGENT] })
+    fake.event({
+      type: "email.received",
+      created_at: "2026-02-01T00:00:00.000Z",
+      data: { email_id: "eml_missed", thread_id: "thr_missed", domain_id: "dom_1", to: [AGENT] },
+    })
+    fake.event({
+      type: "email.complained",
+      created_at: "2026-02-01T00:01:00.000Z",
+      data: { email_id: "eml_old_1" },
+    })
+    await expect(kit.catchUp()).rejects.toThrow(/since/)
+    expect(await kit.catchUp({ since: "2026-01-31T00:00:00.000Z" })).toMatchObject({
+      count: 2,
+      cursor: "2026-02-01T00:01:00.000Z",
+    })
+    expect(onEmail).toHaveBeenCalledTimes(1)
+    expect(
+      await kit.ctx.redis.zrange(`${prefix}-backfill:default:email:eml_old_1:status`, 0, 0, {
+        rev: true,
+      }),
+    ).toEqual(["complained"])
+    // Running it again reads the last minute again; the mail is not answered twice.
+    await kit.catchUp()
+    expect(onEmail).toHaveBeenCalledTimes(1)
   })
 
   it("refuses a prefix flow control keys cannot carry", () => {

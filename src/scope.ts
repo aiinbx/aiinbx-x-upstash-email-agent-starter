@@ -1,4 +1,5 @@
 import {
+  addressKey,
   ALL_INBOXES,
   assertName,
   DEFAULT_TENANT,
@@ -6,6 +7,7 @@ import {
   vectorNamespace,
   type Context,
 } from "./context"
+import { readStatus } from "./status"
 import type { SearchHit, StoredAttachment, StoredEmail, ThreadSummary } from "./types"
 
 export interface ScopeOptions {
@@ -106,10 +108,18 @@ export function createScope(
     if (!ours) throw new NotInScopeError(`Inbox ${address}`)
   }
 
+  /** The addresses that are none of our inboxes, in any tenant. */
+  async function notOurs(addresses: string[]): Promise<string[]> {
+    const ours = await Promise.all(
+      addresses.map((a) => ctx.redis.exists(addressKey(ctx.prefix, a))),
+    )
+    return addresses.filter((_, i) => !ours[i])
+  }
+
   async function assertPending(emailId: string, pending: "draft" | "scheduled"): Promise<void> {
     const [e, status] = await Promise.all([
       email(emailId),
-      ctx.redis.get<string>(k.status(emailId)),
+      readStatus(ctx.redis, k.status(emailId)),
     ])
     const visible = e && (all || e.inboxes.some((i) => inboxes.includes(i)))
     const what = pending === "draft" ? "Draft" : "Scheduled email"
@@ -181,9 +191,9 @@ export function createScope(
       const pipeline = ctx.redis.pipeline()
       for (const id of latest) {
         pipeline.get(k.email(id))
-        pipeline.get(k.status(id))
+        pipeline.zrange(k.status(id), 0, 0, { rev: true })
       }
-      const rows = latest.length ? await pipeline.exec<(StoredEmail | string | null)[]>() : []
+      const rows = latest.length ? await pipeline.exec<(StoredEmail | string[] | null)[]>() : []
       const max = ctx.limits.maxCharsPerMessage
       const messages = latest.flatMap((_, i) => {
         const e = rows[i * 2] as StoredEmail | null
@@ -196,7 +206,7 @@ export function createScope(
           {
             id: e.id,
             direction: e.direction,
-            status: e.direction === "outbound" ? (rows[i * 2 + 1] as string | null) : null,
+            status: e.direction === "outbound" ? ((rows[i * 2 + 1] as string[])[0] ?? null) : null,
             from: e.from,
             to: e.to,
             cc: e.cc,
@@ -391,7 +401,7 @@ export function createScope(
         options,
       )
       await store(sent.id)
-      return { id: sent.id, thread_id: sent.thread_id, status: sent.status }
+      return sendResult(sent)
     },
 
     /**
@@ -403,20 +413,23 @@ export function createScope(
       const ids = await emailIds(threadId)
       const latest = ids.length ? await email(ids[ids.length - 1]!) : null
       if (!latest) throw new Error(`Thread ${threadId} has no messages in this scope yet`)
-      const ours = latest.direction === "outbound"
-      const from = ours
-        ? latest.from.address
-        : (all ? latest.inboxes : latest.inboxes.filter((i) => inboxes.includes(i)))[0]!
-      const to = ours ? latest.to : latest.reply_to.length ? latest.reply_to : [latest.from.address]
-      const cc = request.replyAll
-        ? [...(ours ? [] : latest.to), ...latest.cc].filter((a) => a !== from && !to.includes(a))
-        : []
+      const from =
+        latest.direction === "outbound"
+          ? latest.from.address
+          : (all ? latest.inboxes : latest.inboxes.filter((i) => inboxes.includes(i)))[0]!
+      // AI Inbx works out the recipients from the thread. Only a Reply-To,
+      // which it does not follow, has to be said: then the reply goes there,
+      // and on reply-all the others it was sent to are copied.
+      const replyTo = latest.direction === "inbound" ? latest.reply_to : []
+      const others =
+        replyTo.length && request.replyAll ? await notOurs(latest.to.filter((a) => a !== from)) : []
       const sent = await ctx.aiinbx.threads.reply(
         threadId,
         {
           from: sender(from),
-          to,
-          ...(cc.length && { cc }),
+          reply_all: request.replyAll ?? false,
+          ...(replyTo.length && { to: replyTo }),
+          ...(others.length && { cc: others }),
           text: request.text,
           html: request.html,
           draft: request.draft,
@@ -425,7 +438,7 @@ export function createScope(
         options,
       )
       await store(sent.id)
-      return { id: sent.id, thread_id: sent.thread_id, status: sent.status }
+      return sendResult(sent)
     },
   }
 }
@@ -453,4 +466,17 @@ function seconds(iso: string): number {
   const ms = Date.parse(iso)
   if (Number.isNaN(ms)) throw new Error(`Not an ISO 8601 date: ${iso}`)
   return Math.floor(ms / 1000)
+}
+
+/**
+ * What the agent learns from a send. `suppressed` lists recipients AI Inbx
+ * dropped because they bounced, complained or unsubscribed.
+ */
+function sendResult(sent: { id: string; thread_id: string; status: string; suppressed: string[] }) {
+  return {
+    id: sent.id,
+    thread_id: sent.thread_id,
+    status: sent.status,
+    ...(sent.suppressed.length && { suppressed: sent.suppressed }),
+  }
 }

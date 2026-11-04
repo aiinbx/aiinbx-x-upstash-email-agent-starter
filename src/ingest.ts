@@ -9,6 +9,7 @@ import {
   type ChunkMetadata,
   type Context,
 } from "./context"
+import { statusEntry } from "./status"
 import type { StoredAttachment, StoredEmail } from "./types"
 
 /** What the webhook knows that the email itself does not. */
@@ -109,10 +110,7 @@ export async function saveEmail(
   const email = await ctx.aiinbx.emails.retrieve(emailId, { include: ["attachment_content"] })
   const tenant = ctx.tenantOf(email.space_id)
   const k = keys(ctx.prefix, tenant)
-  const [existing, status] = await Promise.all([
-    ctx.redis.get<StoredEmail>(k.email(emailId)),
-    ctx.redis.get<string>(k.status(emailId)),
-  ])
+  const existing = await ctx.redis.get<StoredEmail>(k.email(emailId))
   // Storing again never narrows who sees an email: a backfill knows less
   // than the webhook that stored it first.
   const inboxes = [
@@ -129,10 +127,7 @@ export async function saveEmail(
     })
   }
   await indexEmail(ctx, email, stored)
-  // Delivery events may already have set a later status. A draft or a
-  // scheduled email only moves on by being sent or canceled, which the API knows.
-  const latest = !status || status === "draft" || status === "scheduled" ? email.status : null
-  await writeRecords(ctx, email, stored, attachments, latest)
+  await writeRecords(ctx, email, stored, attachments)
   return stored
 }
 
@@ -264,13 +259,12 @@ async function writeRecords(
   email: FullEmail,
   stored: StoredEmail,
   attachments: StoredAttachment[],
-  status: string | null,
 ): Promise<void> {
   const k = keys(ctx.prefix, stored.tenant)
   const at = Date.parse(email.created_at)
   const tx = ctx.redis.multi()
   tx.set(k.email(email.id), stored)
-  if (status) tx.set(k.status(email.id), status)
+  tx.zadd(k.status(email.id), statusEntry(email.status))
   for (const a of attachments) tx.set(k.attachment(a.id), a)
   tx.hsetnx(k.thread(email.thread_id), "subject", email.subject)
   for (const inbox of [...stored.inboxes, ALL_INBOXES]) {

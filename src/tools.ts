@@ -39,7 +39,9 @@ export interface EmailToolsOptions {
 export function createEmailTools(scope: Scope, options: EmailToolsOptions = {}): EmailTool[] {
   /**
    * The key that makes a send happen once per run. AI Inbx replays the first
-   * send for a repeated key, and refuses one whose content changed.
+   * send for a repeated key, and refuses one whose content changed. A run
+   * may send now and schedule one follow-up; the time is left out of the
+   * key, so a retry that picks another time cannot schedule a second one.
    */
   async function once(...target: unknown[]): Promise<SendOptions> {
     if (!options.idempotencyScope) return {}
@@ -165,10 +167,12 @@ export function createEmailTools(scope: Scope, options: EmailToolsOptions = {}):
             await once(
               "send",
               [...input.to, ...(input.cc ?? [])].map((a) => a.toLowerCase()).sort(),
-              send_at ?? null,
+              send_at ? "scheduled" : "now",
             ),
           ),
-          "You already sent these recipients an email in this run.",
+          send_at
+            ? "You already scheduled an email to these recipients in this run."
+            : "You already sent these recipients an email in this run.",
         ),
     }),
 
@@ -194,9 +198,11 @@ export function createEmailTools(scope: Scope, options: EmailToolsOptions = {}):
           scope.reply(
             thread_id,
             { text, replyAll: reply_all, sendAt: send_at, draft: options.drafts },
-            await once("reply", thread_id, send_at ?? null),
+            await once("reply", thread_id, send_at ? "scheduled" : "now"),
           ),
-          "You already replied in this thread in this run.",
+          send_at
+            ? "You already scheduled a reply in this thread in this run."
+            : "You already replied in this thread in this run.",
         ),
     }),
 

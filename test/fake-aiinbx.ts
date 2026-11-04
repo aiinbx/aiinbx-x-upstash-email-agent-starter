@@ -1,5 +1,5 @@
 import type AIInbx from "aiinbx"
-import { ConflictError, type FullEmail } from "aiinbx"
+import { ConflictError, type FullEmail, type WebhookEvent } from "aiinbx"
 
 /**
  * An in-memory stand-in for the AI Inbx client: the parts the kit calls.
@@ -8,6 +8,7 @@ import { ConflictError, type FullEmail } from "aiinbx"
 export function fakeAIInbx() {
   const emails = new Map<string, FullEmail>()
   const files = new Map<string, { bytes: Uint8Array | null; text: string | null }>()
+  const events: WebhookEvent[] = []
   const calls = { send: [] as unknown[], reply: [] as unknown[] }
   /** Like the API: a repeated key replays the first send, a changed body is refused. */
   const keys = new Map<string, { body: string; result: unknown }>()
@@ -111,12 +112,40 @@ export function fakeAIInbx() {
     })
   }
 
+  const list = (a?: string | string[]) => (typeof a === "string" ? [a] : (a ?? []))
+
+  /** Whom a reply goes to, worked out from the thread as the API does. */
+  function recipients(
+    threadId: string,
+    from: string,
+    body: { to?: string | string[]; cc?: string | string[]; reply_all?: boolean },
+  ) {
+    const thread = [...emails.values()].filter((e) => e.thread_id === threadId)
+    const latest = thread.at(-1)
+    const ours = new Set([
+      from,
+      ...thread.filter((e) => e.direction === "outbound").map((e) => e.from.address),
+    ])
+    const answered = !latest
+      ? []
+      : latest.direction !== "inbound"
+        ? latest.to
+        : body.reply_all
+          ? [latest.from.address, ...latest.to]
+          : [latest.from.address]
+    const to = body.to ? list(body.to) : answered.filter((a) => !ours.has(a))
+    const copied = body.reply_all && latest ? latest.cc.filter((a) => !ours.has(a)) : []
+    const cc = [...copied, ...list(body.cc)].filter((a) => !to.includes(a))
+    return { to, cc }
+  }
+
   function outbound(
     body: {
       from: unknown
       text: string
       subject?: string
       to?: string | string[]
+      cc?: string | string[]
       draft?: boolean
       scheduled_at?: string
     },
@@ -130,7 +159,8 @@ export function fakeAIInbx() {
       direction: "outbound",
       status: body.draft ? "draft" : body.scheduled_at ? "scheduled" : "queued",
       from: { name: null, address: from.address },
-      to: typeof body.to === "string" ? [body.to] : (body.to ?? []),
+      to: list(body.to),
+      cc: list(body.cc),
       subject: body.subject ?? "Re: thread",
       text: body.text,
       stripped_text: body.text,
@@ -181,13 +211,29 @@ export function fakeAIInbx() {
       }),
       reply: async (
         threadId: string,
-        body: { from: unknown; text: string },
+        body: {
+          from: { address: string }
+          text: string
+          to?: string[]
+          cc?: string[]
+          reply_all?: boolean
+        },
         options?: { idempotencyKey?: string },
       ) => {
         calls.reply.push({ threadId, body, options })
         return idempotent(options?.idempotencyKey, { threadId, body }, () =>
-          outbound(body, threadId),
+          outbound({ ...body, ...recipients(threadId, body.from.address, body) }, threadId),
         )
+      },
+    },
+    events: {
+      list: async function* (query: { after?: string; type?: string[] }) {
+        const after = query.after ? Date.parse(query.after) : -Infinity
+        yield* events
+          .filter(
+            (e) => Date.parse(e.created_at) > after && (!query.type || query.type.includes(e.type)),
+          )
+          .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
       },
     },
     attachments: {
@@ -195,5 +241,10 @@ export function fakeAIInbx() {
     },
   }
 
-  return { client: client as unknown as AIInbx, add, addAttachment, calls }
+  /** Record an event, as AI Inbx does whether or not a webhook was listening. */
+  function event(e: { type: string; data: object; created_at: string; space_id?: string | null }) {
+    events.push({ id: `evt_${++seq}`, space_id: null, ...e } as WebhookEvent)
+  }
+
+  return { client: client as unknown as AIInbx, add, addAttachment, event, calls }
 }

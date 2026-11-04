@@ -1,4 +1,4 @@
-import AIInbx from "aiinbx"
+import AIInbx, { type ListEventsQuery, type WebhookEvent } from "aiinbx"
 import { verifyWebhookRequest, WebhookSignatureError } from "aiinbx/webhooks"
 import { Bucket } from "@upstash/blob"
 import { Redis } from "@upstash/redis"
@@ -25,6 +25,7 @@ import { handleEmail, type HandleOptions, type HandleOutcome } from "./handle"
 import { copyAttachment, ingestEmail, planAttachments, saveEmail, type IngestHints } from "./ingest"
 import { createScope, type ScopeOptions } from "./scope"
 import { createEmailTools } from "./tools"
+import { statusEntry } from "./status"
 import type { DeliveryStatus, StoredEmail } from "./types"
 
 export interface EmailKitOptions extends HandleOptions {
@@ -95,6 +96,11 @@ const STATUS_EVENTS: Record<string, DeliveryStatus> = {
   "email.failed": "failed",
   "email.complained": "complained",
 }
+
+/** The events the kit acts on: new mail, and what became of mail sent. */
+const EVENT_TYPES = ["email.received", "email.sent", ...Object.keys(STATUS_EVENTS)] as NonNullable<
+  ListEventsQuery["type"]
+>
 
 export type EmailKit = ReturnType<typeof createEmailKit>
 
@@ -190,27 +196,41 @@ export function createEmailKit(options: EmailKitOptions = {}) {
       }
       throw error
     }
+    // Still being handled by an earlier delivery: ask AI Inbx to try again
+    // later, so the email is not given up on if that run dies.
+    if (!(await dispatch(event))) {
+      return new Response(null, { status: 503, headers: { "Retry-After": "60" } })
+    }
+    return new Response(null, { status: 204 })
+  }
+
+  /**
+   * Act on one event, from the webhook or from `catchUp`. Safe to repeat:
+   * storing is idempotent, handling is claimed once, statuses only move
+   * forward. False when the email is still being handled elsewhere.
+   */
+  async function dispatch(event: WebhookEvent): Promise<boolean> {
     const at = { spaceId: event.space_id }
-    let done = true
     if (event.type === "email.received") {
       const { email_id, thread_id, domain_id, to } = event.data
       // Envelope recipients are exact for mail received on a domain; mail
       // synced from a mailbox is filed under that mailbox.
       const hints = domain_id ? { recipients: to } : {}
-      done = await enqueue({ email_id, hints, handle: true }, { ...at, threadId: thread_id })
-    } else if (event.type === "email.sent") {
-      const { email_id, thread_id } = event.data
-      done = await enqueue({ email_id, hints: {}, handle: true }, { ...at, threadId: thread_id })
-    } else if (event.type in STATUS_EVENTS && "email_id" in event.data) {
-      const k = keys(prefix, ctx.tenantOf(event.space_id))
-      await ctx.redis.set(k.status(event.data.email_id), STATUS_EVENTS[event.type])
+      return enqueue({ email_id, hints, handle: true }, { ...at, threadId: thread_id })
     }
-    // Still being handled by an earlier delivery: ask AI Inbx to try again
-    // later, so the email is not given up on if that run dies.
-    if (!done) return new Response(null, { status: 503, headers: { "Retry-After": "60" } })
-    return new Response(null, { status: 204 })
+    if (event.type === "email.sent") {
+      const { email_id, thread_id } = event.data
+      return enqueue({ email_id, hints: {}, handle: true }, { ...at, threadId: thread_id })
+    }
+    // A soft bounce, such as a full mailbox, leaves the status as it was.
+    if (event.type === "email.bounced" && !event.data.permanent) return true
+    const status = STATUS_EVENTS[event.type]
+    if (status && "email_id" in event.data) {
+      const k = keys(prefix, ctx.tenantOf(event.space_id))
+      await ctx.redis.zadd(k.status(event.data.email_id), statusEntry(status))
+    }
+    return true
   }
-
   /**
    * `POST` handler for Upstash Workflow, mounted at `workflow.url`. Built on
    * first use: `serve` starts a local QStash under `QSTASH_DEV`, which a kit
@@ -260,25 +280,50 @@ export function createEmailKit(options: EmailKitOptions = {}) {
   }
 
   /**
-   * Store every email created since the last backfill, oldest first: after
-   * downtime, or to load a mailbox that already has mail. Only stores: an
-   * agent should not answer months of old mail. `handle: true` hands each
-   * email to `onEmail` too. `since` overrides the saved position.
+   * Pick up every event since the last catch-up, after downtime: mail that
+   * arrived is stored and handed to `onEmail`, like the webhook would have,
+   * and missed delivery outcomes are recorded. Events are read again from a
+   * minute back, since an event can become readable just behind one already
+   * read; acting on one twice is harmless. `since` overrides the saved
+   * position, and is required the first time.
    */
-  async function backfill({ since, handle = false }: { since?: string; handle?: boolean } = {}) {
+  async function catchUp({ since }: { since?: string } = {}) {
+    const cursorKey = `${prefix}:events:cursor`
+    let cursor = since ?? (await ctx.redis.get<string>(cursorKey))
+    if (!cursor) throw new Error("Pass `since` on the first catch-up")
+    let count = 0
+    for await (const event of ctx.aiinbx.events.list({
+      order: "asc",
+      type: EVENT_TYPES,
+      after: minuteBefore(cursor),
+    })) {
+      // Still being handled elsewhere: stop here, and the next catch-up
+      // starts from this event again.
+      if (!(await dispatch(event))) break
+      cursor = event.created_at
+      await ctx.redis.set(cursorKey, cursor)
+      count++
+    }
+    return { count, cursor }
+  }
+
+  /**
+   * Store the mail that was there before the kit: every email created since
+   * the last backfill, oldest first. Only stores: an agent should not answer
+   * months of old mail. `since` overrides the saved position.
+   */
+  async function backfill({ since }: { since?: string } = {}) {
     const cursorKey = `${prefix}:backfill:cursor`
     let cursor = since ?? (await ctx.redis.get<string>(cursorKey))
     let count = 0
     for await (const email of ctx.aiinbx.emails.list({
       order: "asc",
       limit: 100,
-      // An email can become readable just behind one already read, so re-read
-      // the last minute. Storing twice is harmless, and handling is claimed once.
-      ...(cursor && { after: new Date(Date.parse(cursor) - 60_000).toISOString() }),
+      ...(cursor && { after: minuteBefore(cursor) }),
     })) {
       if (email.status === "draft" || email.status === "scheduled") continue
       await enqueue(
-        { email_id: email.id, hints: {}, handle },
+        { email_id: email.id, hints: {}, handle: false },
         { spaceId: email.space_id, threadId: email.thread_id },
       )
       cursor = email.created_at
@@ -317,7 +362,7 @@ export function createEmailKit(options: EmailKitOptions = {}) {
     })
   }
 
-  return { ctx, scope, webhook, workflow, ingest, backfill, deleteTenant }
+  return { ctx, scope, webhook, workflow, ingest, catchUp, backfill, deleteTenant }
 }
 
 interface WorkflowPayload {
@@ -329,4 +374,12 @@ interface WorkflowPayload {
 /** Runtimes without `process` (Workers) pass every client and secret explicitly. */
 function env(name: string): string | undefined {
   return globalThis.process?.env?.[name]
+}
+
+/**
+ * A list position a minute back: something can become readable just behind
+ * what was already read, and reading it twice is harmless.
+ */
+function minuteBefore(instant: string): string {
+  return new Date(Date.parse(instant) - 60_000).toISOString()
 }
