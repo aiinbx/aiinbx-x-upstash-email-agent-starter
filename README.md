@@ -43,28 +43,24 @@ cd aiinbx-x-upstash-email-agent-starter && npm install
 cp .env.example .env.local
 ```
 
-1. **AI Inbx.** Sign up at [aiinbx.com](https://aiinbx.com). Your workspace comes with `<slug>.aiinbx.app`, so every address on it works right away. Put an API key in `AI_INBX_API_KEY`.
-2. **Upstash.** Create the three stores with the [Upstash CLI](https://upstash.com/docs/cli) and copy their credentials into `.env.local`:
+1. **AI Inbx.** Sign up at [aiinbx.com](https://aiinbx.com). Your workspace comes with `<slug>.aiinbx.app`, so every address on it works right away. Put an API key in `AI_INBX_API_KEY` in `.env.local`, and your agent's address in `AGENT_INBOX`.
+2. **Upstash.** Log in once with the [Upstash CLI](https://upstash.com/docs/cli), then let the setup script create a Redis database, a Vector index and a Blob bucket and write their credentials to `.env.local`:
 
    ```sh
-   upstash redis create --name email-agent --region eu-central-1
-   upstash vector create --name email-agent --region eu-west-1 --type payg \
-     --index-type HYBRID --embedding-model TEXT_EMBEDDING_3_SMALL --sparse-embedding-model BM25 \
-     --similarity-function COSINE --dimension-count 1536
-   upstash blob create --name email-agent --write-env .env.local
+   npx @upstash/cli login
+   npm run setup
    ```
 
-   Upstash embeds the text itself with OpenAI's `text-embedding-3-small`, which works across languages: a German question finds an English invoice. The hybrid index adds keyword matching (BM25), so invoice numbers and names are found exactly.
+   The Vector index is hybrid: Upstash embeds the text with OpenAI's `text-embedding-3-small` (no OpenAI key needed), which works across languages, and adds BM25 keyword matching for exact strings like invoice numbers. A German question finds an English invoice. `scripts/setup.ts` shows the exact commands if you'd rather run them yourself.
 
 3. **Run it locally.** No tunnel needed: `aiinbx listen` forwards your workspace's events to localhost, signed like real deliveries, and `QSTASH_DEV=true` runs Workflow on a local QStash.
 
    ```sh
-   echo "AI_INBX_WEBHOOK_SECRET=$(npx @aiinbx/cli listen --print-secret)" >> .env.local
-   npm run dev                                   # webhook, workflow and MCP on :3000
-   npx @aiinbx/cli listen --forward-to localhost:3000/webhook
+   npm run dev                                                 # webhook, workflow and MCP on :3000
+   npx @aiinbx/cli listen --forward-to localhost:3000/webhook  # second terminal, in this folder
    ```
 
-   Mail `agent@<slug>.aiinbx.app` from any other address and watch it arrive. The MCP endpoint at `localhost:3000/mcp` gives any MCP client the tools for `AGENT_INBOX`.
+   The AI Inbx CLI picks up `AI_INBX_API_KEY` from `.env.local` when you run it in this folder. Mail `AGENT_INBOX` from any other address, and the dev server prints `[onEmail] default/agent@… ← you@…: subject`. Your agent goes in `onEmail` in `scripts/dev.ts`; [`examples/ai-sdk-agent.ts`](examples/ai-sdk-agent.ts) shows a full one. The MCP endpoint at `localhost:3000/mcp` gives any MCP client the tools for `AGENT_INBOX`.
 
 ## Use it in your app
 

@@ -1,7 +1,8 @@
 /**
  * Local server for trying the kit: the webhook, the workflow and an MCP
- * endpoint for one inbox. Run with `bun dev`, then forward AI Inbx events to
- * it with `aiinbx listen --forward-to localhost:3000/webhook`.
+ * endpoint for one inbox. Run with `npm run dev`, then forward AI Inbx events
+ * to it with `npx @aiinbx/cli listen --forward-to localhost:3000/webhook`.
+ * Your agent goes in `onEmail` below; `examples/ai-sdk-agent.ts` shows one.
  */
 import { createEmailKit, createEmailTools } from "../src"
 import { createMcpHandler } from "../src/adapters/mcp"

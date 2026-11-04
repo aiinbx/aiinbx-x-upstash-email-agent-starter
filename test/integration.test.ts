@@ -209,19 +209,6 @@ describe("search", () => {
     expect(hit.excerpt).toContain("4,200.00 EUR")
   })
 
-  it("finds an English document from a question in another language", async () => {
-    const hits = await eventually(
-      () =>
-        tool(
-          kit,
-          AGENT,
-          "search_emails",
-        )({ query: "Wie hoch ist der offene Betrag und bis wann?" }),
-      (h: any[]) => h.length > 0,
-    )
-    expect(hits[0]).toMatchObject({ source: "attachment", attachment_id: "att_invoice" })
-  })
-
   it("filters by sender and time", async () => {
     const from = await tool(
       kit,
@@ -238,6 +225,103 @@ describe("search", () => {
     await expect(
       tool(kit, AGENT, "search_emails")({ query: "x", from: "a'b@example.com" }),
     ).rejects.toThrow(/Unsupported character/)
+  })
+})
+
+describe("search across languages", () => {
+  // A German question against an English inbox: one Acme invoice PDF among a
+  // dozen ordinary emails, one of them another vendor's invoice.
+  const tenant = "spc_search"
+  const others: [string, string, string][] = [
+    [
+      "Shipping update for order 1182",
+      "logistics@parcel.example",
+      "Your order 1182 left the warehouse and arrives Thursday.",
+    ],
+    [
+      "Team offsite in Lisbon",
+      "office@kestrel.example",
+      "We booked the offsite for March 3 to 5. Flights are on the company card.",
+    ],
+    [
+      "Your Figma receipt",
+      "billing@figma.example",
+      "Thanks for your payment of $45.00 for the Professional plan.",
+    ],
+    [
+      "Re: Q4 hiring plan",
+      "ceo@kestrel.example",
+      "Let's open two backend roles and one designer role before December.",
+    ],
+    [
+      "Initech invoice INV-77",
+      "ar@initech.example",
+      "Invoice INV-77 for consulting, total 980 USD, due January 15.",
+    ],
+    [
+      "Server outage postmortem",
+      "sre@kestrel.example",
+      "The database ran out of connections at 02:14 UTC. Root cause and fixes attached.",
+    ],
+    ["Lunch on Friday?", "bob@friend.example", "Want to try the new ramen place on Friday?"],
+    [
+      "Contract renewal with Globex",
+      "legal@globex.example",
+      "The renewal terms are attached for your signature by next week.",
+    ],
+    [
+      "Newsletter: what's new in November",
+      "news@saas.example",
+      "Dark mode, faster exports and a new API for webhooks.",
+    ],
+    [
+      "Password reset requested",
+      "noreply@tool.example",
+      "Someone asked to reset your password. Ignore this if it was you.",
+    ],
+    ["Re: office keys", "office@kestrel.example", "Spare keys are with reception now."],
+  ]
+
+  beforeAll(async () => {
+    const add = async (id: string, subject: string, from: string, text: string) => {
+      fake.add({
+        id,
+        thread_id: `thr_${id}`,
+        space_id: tenant,
+        to: [AGENT],
+        subject,
+        from: { name: null, address: from },
+        stripped_text: text,
+      })
+    }
+    await add(
+      "eml_acme",
+      "Invoice for November",
+      "anna@acme.example",
+      "Hi, attached is our invoice for the November robot lease. Thanks, Anna",
+    )
+    fake.addAttachment("eml_acme", {
+      id: "att_acme",
+      filename: "invoice.pdf",
+      content_type: "application/pdf",
+      bytes: new TextEncoder().encode("%PDF-1.3 fake"),
+      text: INVOICE_TEXT,
+    })
+    for (const [i, [subject, from, text]] of others.entries())
+      await add(`eml_other_${i}`, subject, from, text)
+    for (const id of ["eml_acme", ...others.map((_, i) => `eml_other_${i}`)]) {
+      await kit.ingest(id, { hints: { recipients: [AGENT] } })
+    }
+  })
+
+  it("finds the English invoice from a German question", async () => {
+    const scope = kit.scope({ tenant, inboxes: AGENT })
+    const hits = await eventually(
+      () => scope.search({ query: "Wie viel schulden wir Acme noch, und bis wann?" }),
+      (h) => h.length >= 5,
+    )
+    expect(hits[0]).toMatchObject({ email_id: "eml_acme", source: "attachment" })
+    expect(hits[0]!.excerpt).toContain("4,200.00 EUR")
   })
 })
 

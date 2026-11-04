@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "setup": "tsx scripts/setup.ts",
     "dev": "tsx --env-file=.env.local scripts/dev.ts",
     "typecheck": "tsc -p .",
     "test": "vitest run",
