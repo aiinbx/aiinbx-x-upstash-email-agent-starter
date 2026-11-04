@@ -272,9 +272,9 @@ export function createEmailKit(options: EmailKitOptions = {}) {
     for await (const email of ctx.aiinbx.emails.list({
       order: "asc",
       limit: 100,
-      // `after` leaves the instant itself out; step back so an email that
-      // shares the last one's millisecond is not skipped. Storing twice is harmless.
-      ...(cursor && { after: new Date(Date.parse(cursor) - 1).toISOString() }),
+      // An email can become readable just behind one already read, so re-read
+      // the last minute. Storing twice is harmless, and handling is claimed once.
+      ...(cursor && { after: new Date(Date.parse(cursor) - 60_000).toISOString() }),
     })) {
       if (email.status === "draft" || email.status === "scheduled") continue
       await enqueue(

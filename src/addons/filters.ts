@@ -5,6 +5,7 @@
  *     shouldHandle: allOf(
  *       skipCategories("auto_reply", "out_of_office", "bounce", "spam"),
  *       skipOwnInboxes,
+ *       skipFailedDmarc,
  *       senderLimit({ max: 20, windowSeconds: 3600 }),
  *     ),
  *   })
@@ -35,6 +36,12 @@ export function skipCategories(...categories: EmailCategory[]): EmailFilter {
  */
 export const skipOwnInboxes: EmailFilter = async ({ email, ctx }) =>
   !(await ctx.redis.exists(addressKey(ctx.prefix, email.from.address)))
+
+/**
+ * Skip received mail whose DMARC check failed: its From address is not
+ * backed by the sender's domain, so it may only claim to be from someone.
+ */
+export const skipFailedDmarc: EmailFilter = ({ email }) => email.verdicts?.dmarc !== "FAIL"
 
 /**
  * Handle at most `max` emails per sender and inbox in each window; the rest

@@ -195,6 +195,7 @@ function toStored(
     subject: email.subject,
     text: (email.stripped_text ?? email.text ?? email.snippet).trim(),
     category: email.category,
+    verdicts: email.verdicts,
     message_id: email.message_id,
     in_reply_to: email.in_reply_to,
     created_at: email.created_at,

@@ -1,4 +1,4 @@
-import type { AttachmentPreparation, EmailCategory, EmailStatus } from "aiinbx"
+import type { AttachmentPreparation, EmailCategory, EmailStatus, EmailVerdicts } from "aiinbx"
 
 /** An email as the kit keeps it in Redis: what an agent needs, nothing more. */
 export interface StoredEmail {
@@ -17,6 +17,8 @@ export interface StoredEmail {
   /** What this message says, quoted conversation and repeated signature removed. */
   text: string
   category: EmailCategory | null
+  /** SPF, DKIM, DMARC and spam results of received mail; null for mail AI Inbx did not receive itself. */
+  verdicts: EmailVerdicts | null
   message_id: string
   in_reply_to: string | null
   created_at: string

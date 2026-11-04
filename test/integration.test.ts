@@ -9,7 +9,13 @@ import { Index } from "@upstash/vector"
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { createEmailKit, createEmailTools, NotInScopeError, type EmailKitOptions } from "../src"
 import type { ChunkMetadata } from "../src/context"
-import { allOf, senderLimit, skipCategories, skipOwnInboxes } from "../src/addons/filters"
+import {
+  allOf,
+  senderLimit,
+  skipCategories,
+  skipFailedDmarc,
+  skipOwnInboxes,
+} from "../src/addons/filters"
 import { handleEmail } from "../src/handle"
 import type { StoredEmail } from "../src/types"
 import { fakeAIInbx } from "./fake-aiinbx"
@@ -712,6 +718,16 @@ describe("addons", () => {
     expect((await kit.ingest("eml_ooo2")).outcomes[AGENT]).toBe("skipped")
     expect((await kit.ingest("eml_receipt")).outcomes[AGENT]).toBe("handled")
     expect((await kit.ingest("eml_colleague")).outcomes[AGENT]).toBe("skipped")
+  })
+
+  it("skip mail that fails DMARC", async () => {
+    const onEmail = vi.fn(async () => {})
+    const { fake, kit } = setup({ onEmail, shouldHandle: skipFailedDmarc })
+    const verdicts = (dmarc: string) => ({ spam: "PASS", spf: "PASS", dkim: "PASS", dmarc })
+    fake.add({ id: "eml_spoof", thread_id: "thr_spoof", to: [AGENT], verdicts: verdicts("FAIL") })
+    fake.add({ id: "eml_signed", thread_id: "thr_signed", to: [AGENT], verdicts: verdicts("PASS") })
+    expect((await kit.ingest("eml_spoof")).outcomes[AGENT]).toBe("skipped")
+    expect((await kit.ingest("eml_signed")).outcomes[AGENT]).toBe("handled")
   })
 
   it("limit a flooding sender, counting each email once", async () => {

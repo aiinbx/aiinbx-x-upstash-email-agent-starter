@@ -230,12 +230,19 @@ Which emails reach `onEmail` is your call: by default every received email does.
 Opt-in filters in `src/addons/filters.ts`. Nothing runs unless you add it, and each is a few lines to read or change.
 
 ```ts
-import { allOf, senderLimit, skipCategories, skipOwnInboxes } from "./email-kit/addons/filters"
+import {
+  allOf,
+  senderLimit,
+  skipCategories,
+  skipFailedDmarc,
+  skipOwnInboxes,
+} from "./email-kit/addons/filters"
 
 createEmailKit({
   shouldHandle: allOf(
     skipCategories("auto_reply", "out_of_office", "bounce", "spam"), // AI Inbx classifies every email
     skipOwnInboxes, // mail from any of your inboxes, in any tenant
+    skipFailedDmarc, // a From address its domain does not back
     senderLimit({ max: 20, windowSeconds: 3600 }), // per sender and inbox
   ),
 })
